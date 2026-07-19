@@ -1,0 +1,13 @@
+{
+  "name": "video-crawler-codex-handoff",
+  "date": "2026-07-19",
+  "purpose": "Codex implementation handoff package",
+  "entry_files": [
+    "AGENTS.md",
+    "CONSTRAINTS.md",
+    "README.md",
+    "CODEX_PROMPT.md",
+    "docs/superpowers/plans/2026-07-19-video-crawler-platform.md"
+  ],
+  "implementation_status": "specification and scaffold only"
+}
