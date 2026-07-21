@@ -185,7 +185,7 @@ CREATE TABLE raw_artifacts (
   video_id BIGINT UNSIGNED NULL,
   artifact_type VARCHAR(50) NOT NULL,
   bucket VARCHAR(100) NOT NULL,
-  object_key VARCHAR(1000) NOT NULL,
+  object_key VARCHAR(600) NOT NULL,
   content_type VARCHAR(200) NOT NULL,
   compression VARCHAR(20) NOT NULL,
   etag VARCHAR(200) NULL,

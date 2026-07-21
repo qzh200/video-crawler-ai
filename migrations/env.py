@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from importlib import import_module
 from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
-from sqlalchemy.engine import Connection, URL
+from sqlalchemy.engine import URL, Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from video_crawler.core.config import get_settings
 from video_crawler.infrastructure.database.base import Base
+
+_models = import_module("video_crawler.infrastructure.database.models")
 
 config = context.config
 
