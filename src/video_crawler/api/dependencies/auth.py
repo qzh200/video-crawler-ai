@@ -1,29 +1,35 @@
 from __future__ import annotations
 
 import hmac
-import logging
+from typing import Never
 
 from fastapi import Header, HTTPException
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 from video_crawler.core.config import get_settings
 
-_LOG = logging.getLogger(__name__)
+
+def _reject_api_key() -> Never:
+    raise HTTPException(
+        status_code=HTTP_401_UNAUTHORIZED,
+        detail={
+            "error": {
+                "code": "UNAUTHORIZED",
+                "message": "a valid API key is required",
+                "request_id": None,
+                "details": {},
+            }
+        },
+        headers={"WWW-Authenticate": "ApiKey"},
+    )
 
 
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
     settings = get_settings()
     if not settings.api_key_enabled:
-        return None
+        return
     if x_api_key is None:
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="missing api key")
-    # constant-time compare
+        _reject_api_key()
     expected = settings.api_key.get_secret_value()
-    try:
-        ok = hmac.compare_digest(x_api_key, expected)
-    except Exception:  # defensive
-        _LOG.exception("api key comparison failed")
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="invalid api key") from None
-    if not ok:
-        raise HTTPException(status_code=HTTP_401_UNAUTHORIZED, detail="invalid api key")
-    return None
+    if not hmac.compare_digest(x_api_key, expected):
+        _reject_api_key()

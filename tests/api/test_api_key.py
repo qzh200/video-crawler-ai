@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
@@ -52,9 +54,11 @@ def test_api_key_enabled_rejects_missing_and_wrong(monkeypatch) -> None:
 
     r = client.get("/api/v1/ping")
     assert r.status_code == 401
+    assert r.json()["detail"]["error"]["code"] == "UNAUTHORIZED"
 
     r2 = client.get("/api/v1/ping", headers={"X-API-Key": "wrong"})
     assert r2.status_code == 401
+    assert r2.json()["detail"]["error"]["code"] == "UNAUTHORIZED"
 
 
 def test_api_key_enabled_accepts_correct(monkeypatch) -> None:
@@ -64,5 +68,9 @@ def test_api_key_enabled_accepts_correct(monkeypatch) -> None:
     app = _make_app()
     client = TestClient(app)
 
-    r = client.get("/api/v1/ping", headers={"X-API-Key": "correct-key"})
+    with patch(
+        "video_crawler.api.dependencies.auth.hmac.compare_digest", return_value=True
+    ) as compare:
+        r = client.get("/api/v1/ping", headers={"X-API-Key": "correct-key"})
     assert r.status_code == 200
+    compare.assert_called_once_with("correct-key", "correct-key")

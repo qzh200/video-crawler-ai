@@ -1,63 +1,74 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, MutableMapping
 from typing import Any
 
-SENSITIVE_KEYS = (
-    "cookie",
-    "set-cookie",
-    "authorization",
-    "auth",
-    "api_key",
-    "apikey",
-    "x-api-key",
-    "password",
-    "passwd",
-    "token",
-    "access_token",
+REDACTED = "<redacted>"
+
+_SENSITIVE_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "auth",
+        "authorization",
+        "cookie",
+        "client_secret",
+        "minio_secret_key",
+        "mysql_password",
+        "passwd",
+        "password",
+        "secret",
+        "set_cookie",
+        "token",
+        "x_api_key",
+    }
+)
+_SENSITIVE_SUFFIXES = ("_api_key", "_password", "_secret", "_token")
+_HEADER_RE = re.compile(r"(?im)\b(set-cookie|cookie|authorization|x-api-key)\s*:\s*[^\r\n]*")
+_QUERY_RE = re.compile(
+    r"(?i)([?&](?:"
+    r"access_token|api_key|apikey|authorization|client_secret|cookie|key|password|"
+    r"refresh_token|secret|session|sign|signature|token|w_rid|x-api-key"
+    r")=)[^&#\s'\"]*"
 )
 
-_SENSITIVE_KEY_RE = re.compile("|".join(re.escape(k) for k in SENSITIVE_KEYS), re.IGNORECASE)
+
+def _is_sensitive_key(key: object) -> bool:
+    normalized = str(key).strip().lower().replace("-", "_")
+    return normalized in _SENSITIVE_KEYS or normalized.endswith(_SENSITIVE_SUFFIXES)
 
 
-def _redact_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return redact_event(value)
+def redact_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: REDACTED if _is_sensitive_key(key) else redact_value(item)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
-        return [_redact_value(v) for v in value]
+        return [redact_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_value(item) for item in value)
     if isinstance(value, str):
-        # redact header-like patterns: "Cookie: ..." or "Authorization: Bearer ..."
-        value = re.sub(r"(?i)(set-cookie|cookie)\s*:\s*[^;\n\r]+", r"\1: <redacted>", value)
-        value = re.sub(r"(?i)authorization\s*:\s*[^;\n\r]+", "authorization: <redacted>", value)
-
-        # redact query params like ?token=... or &api_key=...
-        qp_pattern = r"(?i)([?&](?:api_key|apikey|x-api-key|token|access_token)=)[^&\s']+"
-        value = re.sub(qp_pattern, r"\1<redacted>", value)
-
-        # redact obvious long secrets
-        if len(value) > 50 and re.search(r"[A-Za-z0-9_\-]{20,}", value):
-            return "<redacted>"
-        return value
+        return _QUERY_RE.sub(r"\1" + REDACTED, _HEADER_RE.sub(r"\1: " + REDACTED, value))
+    if hasattr(value, "get_secret_value"):
+        return REDACTED
     return value
 
 
-def redact_event(event: dict[str, Any]) -> dict[str, Any]:
-    """Return a deep-copy of `event` with sensitive fields redacted.
+def redact_event(event: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a recursively redacted copy of a structured log event."""
 
-    Keys that match known sensitive names are replaced with "<redacted>".
-    Strings are sanitized for header patterns and query parameters.
-    Works recursively for nested dicts and lists.
-    """
-    out: dict[str, Any] = {}
-    for k, v in event.items():
-        if _SENSITIVE_KEY_RE.search(k):
-            out[k] = "<redacted>"
-            continue
-        if isinstance(v, dict):
-            out[k] = redact_event(v)
-            continue
-        if isinstance(v, list):
-            out[k] = [_redact_value(i) for i in v]
-            continue
-        out[k] = _redact_value(v)
-    return out
+    return {
+        key: REDACTED if _is_sensitive_key(key) else redact_value(value)
+        for key, value in event.items()
+    }
+
+
+def redact_processor(
+    logger: Any,
+    method_name: str,
+    event_dict: MutableMapping[str, Any],
+) -> Mapping[str, Any]:
+    del logger, method_name
+    return redact_event(event_dict)
