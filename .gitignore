@@ -39,3 +39,5 @@ secrets/
 .tmp/
 *.zst
 *.gz
+
+uv.lock
