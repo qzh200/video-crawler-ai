@@ -1,0 +1,23 @@
+{
+  "code": 0,
+  "data": {
+    "list": [
+      {
+        "bvid": "BV1FAKE00001",
+        "uri": "https://www.bilibili.com/video/BV1FAKE00001"
+      },
+      {
+        "bvid": "BV1FAKE00002",
+        "uri": "https://www.bilibili.com/video/BV1FAKE00002"
+      },
+      {
+        "bvid": "BV1FAKE00001",
+        "uri": "https://www.bilibili.com/video/BV1FAKE00001?duplicate=1"
+      },
+      {
+        "bvid": "BV1FAKE00003",
+        "uri": "https://www.bilibili.com/video/BV1FAKE00003"
+      }
+    ]
+  }
+}
