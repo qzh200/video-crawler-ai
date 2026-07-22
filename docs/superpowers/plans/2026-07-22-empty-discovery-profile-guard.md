@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Repository policy forbids subagents and parallel agents. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Prevent inactive browser Profiles and empty Bilibili popular-page discoveries from producing misleading successful crawl jobs, while restoring a bounded live discovery fallback and preserving actionable sanitized failure evidence.
+**Goal:** Restore Crawl4AI 0.9.2 response-body capture, prevent inactive browser Profiles and empty Bilibili popular-page discoveries from producing misleading successful crawl jobs, and preserve actionable sanitized failure evidence.
 
-**Architecture:** Add Profile-state validation at the application boundary and the SQL claim boundary. Keep Bilibili endpoint, DOM, and parsing logic inside its Adapter; represent an exhausted discovery as a generic coded domain error. Persist coded module failures onto the enclosing run so the existing job API exposes them without a migration.
+**Architecture:** Normalize Crawl4AI response events at the generic browser gateway and use text-only browser mode to avoid out-of-scope binary image capture. Add Profile-state validation at the application boundary and the SQL claim boundary. Keep Bilibili endpoint, DOM, and parsing logic inside its Adapter; represent an exhausted discovery as a generic coded domain error. Persist coded module failures onto the enclosing run so the existing job API exposes them without a migration.
 
 **Tech Stack:** Python 3.12, FastAPI, Pydantic v2, SQLAlchemy 2.x async, MySQL 8, Crawl4AI, HTTPX, MinIO, pytest, pytest-asyncio, Ruff, mypy.
 
@@ -24,6 +24,9 @@
 ## Planned File Map
 
 ```text
+src/video_crawler/infrastructure/browser/crawl4ai_gateway.py
+    Crawl4AI 0.9.2 response-event normalization and text-only browser configuration.
+
 src/video_crawler/application/jobs.py
     Profile-state reader protocol and stable job-creation errors.
 
@@ -42,6 +45,9 @@ src/video_crawler/adapters/bilibili/discovery.py
 tests/api/test_jobs.py
     Job-creation Profile-state contract tests.
 
+tests/unit/browser/test_browser_gateway.py
+    Nested response-body, event filtering, and text-only browser tests.
+
 tests/integration/database/test_job_repository.py
     Worker claim behavior for inactive and reactivated Profiles.
 
@@ -56,6 +62,162 @@ docs/api-contract.md
 
 docs/operations.md
     UTF-8 inspection and binary UUID export guidance.
+```
+
+### Task 0: Restore Crawl4AI Response Capture Compatibility
+
+**Files:**
+- Modify: `src/video_crawler/infrastructure/browser/crawl4ai_gateway.py`
+- Modify: `tests/unit/browser/test_browser_gateway.py`
+
+**Interfaces:**
+- Consumes: Crawl4AI 0.9.2 flat network event mappings.
+- Produces: `_CrawlResultPage.captured_responses -> tuple[CapturedResponse, ...]` with byte bodies.
+- Preserves: the platform-neutral `BrowserGateway` and `NetworkCaptureGateway` contracts.
+- Configures: `BrowserConfig(text_mode=True)` through `_browser_config()`.
+
+- [ ] **Step 1: Add failing response-normalization tests**
+
+Add two tests to `tests/unit/browser/test_browser_gateway.py`:
+
+```python
+def test_crawl_result_page_normalizes_nested_text_response_body() -> None:
+    result = SimpleNamespace(
+        network_requests=[
+            {
+                "event_type": "response",
+                "url": "https://api.example.test/state",
+                "status": 200,
+                "headers": {"content-type": "application/json"},
+                "body": {"text": '{"active":true}'},
+            }
+        ]
+    )
+    page = _CrawlResultPage(
+        crawler=FakeSessionCrawler(),
+        run_config_factory=FakeRunConfig,
+        result=result,
+        url="https://example.test/page",
+        session_id="session-1",
+    )
+
+    assert page.captured_responses == (
+        CapturedResponse(
+            url="https://api.example.test/state",
+            status_code=200,
+            headers={"content-type": "application/json"},
+            body=b'{"active":true}',
+        ),
+    )
+
+
+def test_crawl_result_page_ignores_non_response_network_events() -> None:
+    result = SimpleNamespace(
+        network_requests=[
+            {"event_type": "request", "url": "https://example.test/request"},
+            {
+                "event_type": "response_capture_error",
+                "url": "https://example.test/image.png",
+                "error": "binary body unavailable",
+            },
+        ]
+    )
+    page = _CrawlResultPage(
+        crawler=FakeSessionCrawler(),
+        run_config_factory=FakeRunConfig,
+        result=result,
+        url="https://example.test/page",
+        session_id="session-1",
+    )
+
+    assert page.captured_responses == ()
+```
+
+- [ ] **Step 2: Add the failing text-only browser configuration assertion**
+
+In `test_browser_gateway_applies_profile_and_page_timeout`, add:
+
+```python
+assert crawler.config == {
+    "user_data_dir": str(tmp_path / "profile-1"),
+    "use_persistent_context": True,
+    "headless": True,
+    "text_mode": True,
+}
+```
+
+Update the visible-login configuration assertion to include `"text_mode": True`.
+
+- [ ] **Step 3: Run the three tests and verify RED**
+
+Run:
+
+```powershell
+uv run pytest tests/unit/browser/test_browser_gateway.py::test_crawl_result_page_normalizes_nested_text_response_body tests/unit/browser/test_browser_gateway.py::test_crawl_result_page_ignores_non_response_network_events tests/unit/browser/test_browser_gateway.py::test_browser_gateway_applies_profile_and_page_timeout -q
+```
+
+Expected: the nested body assertion receives `b""`, the request event is incorrectly exposed as a captured response, and browser config lacks `text_mode`.
+
+- [ ] **Step 4: Implement platform-neutral normalization**
+
+Add this helper above `_CrawlResultPage`:
+
+```python
+def _response_body_bytes(value: object) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode()
+    if isinstance(value, Mapping):
+        text = value.get("text")
+        if isinstance(text, str):
+            return text.encode()
+    return b""
+```
+
+In `_browser_config()`, add `"text_mode": True`.
+
+In `_CrawlResultPage.captured_responses`, require a response event for flat Crawl4AI entries and replace the existing body conversion:
+
+```python
+response = entry.get("response")
+if isinstance(response, Mapping):
+    values = response
+elif entry.get("event_type") == "response":
+    values = entry
+else:
+    continue
+
+body = _response_body_bytes(values.get("body", b""))
+```
+
+- [ ] **Step 5: Run browser tests and verify GREEN**
+
+Run:
+
+```powershell
+uv run pytest tests/unit/browser/test_browser_gateway.py -q
+```
+
+Expected: all browser gateway tests pass.
+
+- [ ] **Step 6: Run focused static checks**
+
+Run:
+
+```powershell
+uv run ruff format --check src/video_crawler/infrastructure/browser/crawl4ai_gateway.py tests/unit/browser/test_browser_gateway.py
+uv run ruff check src/video_crawler/infrastructure/browser/crawl4ai_gateway.py tests/unit/browser/test_browser_gateway.py
+uv run mypy src/video_crawler/infrastructure/browser/crawl4ai_gateway.py
+```
+
+Expected: all commands exit 0.
+
+- [ ] **Step 7: Commit Task 0**
+
+```powershell
+git add -- src/video_crawler/infrastructure/browser/crawl4ai_gateway.py tests/unit/browser/test_browser_gateway.py
+git commit -m "fix: normalize Crawl4AI captured responses"
 ```
 
 ### Task 1: Reject Job Creation for Missing or Inactive Profiles

@@ -8,14 +8,23 @@ Repair the Bilibili popular-page workflow that can report a successful root job 
 
 ## Scope
 
-This change covers four related behaviors:
+This change covers five related behaviors:
 
-1. reject job creation when the referenced Profile does not exist or is not `active`;
-2. prevent the Worker from claiming a pending job whose Profile is not `active`;
-3. make Bilibili popular discovery use bounded fallbacks and fail explicitly when all sources produce zero valid targets;
-4. document the difference between UTF-8 display errors and stored data corruption.
+1. normalize Crawl4AI 0.9.2 captured response bodies at the generic browser gateway;
+2. reject job creation when the referenced Profile does not exist or is not `active`;
+3. prevent the Worker from claiming a pending job whose Profile is not `active`;
+4. make Bilibili popular discovery use bounded fallbacks and fail explicitly when all sources produce zero valid targets;
+5. document the difference between UTF-8 display errors and stored data corruption.
 
 It does not implement automatic login, CAPTCHA handling, anti-bot bypasses, scheduled retries, additional Workers, or new data collection fields.
+
+## Crawl4AI Capture Compatibility
+
+Crawl4AI 0.9.2 emits captured response entries as flat mappings whose `body` is a nested mapping such as `{"text": "..."}`. The generic gateway currently accepts only direct `str` or `bytes` bodies and therefore converts valid JSON response bodies to `b""`. This prevents Bilibili authentication from reading `/x/web-interface/nav` and also removes the captured popular-list payload used by discovery.
+
+`_CrawlResultPage.captured_responses` will normalize direct byte bodies, direct text bodies, and nested text bodies into `CapturedResponse.body: bytes`. It will ignore request events and capture-error events instead of converting them into zero-status responses. This normalization remains platform-neutral and belongs only in the Crawl4AI infrastructure gateway.
+
+Crawl4AI 0.9.2 and its current upstream `main` also attempt to call `response.text()` for binary image responses and reference `text_body` after that call fails. The project will not patch site-packages or vendor Crawl4AI internals. The browser will run with `BrowserConfig(text_mode=True)`, which blocks images and other rich content that are outside this project's collection scope while preserving page HTML, JavaScript, and API responses. This removes the known image-capture warning at its source and reduces unnecessary browser traffic.
 
 ## Profile State Enforcement
 
@@ -89,12 +98,13 @@ Discovery failure is persisted on the run/module and exposed through the existin
 
 Implementation will follow red-green-refactor cycles with one behavior per test:
 
-1. application/API tests prove missing and inactive Profiles reject job creation before persistence or idempotency reservation;
-2. database integration tests prove pending jobs with inactive Profiles are skipped and become claimable after activation;
-3. Adapter tests prove captured-response, delayed DOM, and HTTP fallback paths preserve ordering, deduplication, and `video_limit`;
-4. Adapter/pipeline tests prove all-empty discovery raises `DISCOVERY_EMPTY` and produces a failed module/root result;
-5. logging/error tests prove diagnostic data contains no secret header values;
-6. documentation checks preserve UTF-8 text.
+1. browser gateway tests prove Crawl4AI 0.9.2 nested text bodies become bytes, non-response events are ignored, and text-only mode is enabled;
+2. application/API tests prove missing and inactive Profiles reject job creation before persistence or idempotency reservation;
+3. database integration tests prove pending jobs with inactive Profiles are skipped and become claimable after activation;
+4. Adapter tests prove captured-response, delayed DOM, and HTTP fallback paths preserve ordering, deduplication, and `video_limit`;
+5. Adapter/pipeline tests prove all-empty discovery raises `DISCOVERY_EMPTY` and produces a failed module/root result;
+6. logging/error tests prove diagnostic data contains no secret header values;
+7. documentation checks preserve UTF-8 text.
 
 After targeted tests pass, run the complete test suite, Ruff formatting and lint checks, mypy, and the repository's existing architecture/secret scans. Live Bilibili access remains an explicit manual verification and is not added to CI.
 
@@ -102,6 +112,8 @@ After targeted tests pass, run the complete test suite, Ruff formatting and lint
 
 - A new job cannot be created with a missing, expired, or disabled Profile.
 - A pending job cannot be claimed while its Profile is inactive.
+- Crawl4AI 0.9.2 captured JSON response bodies reach adapters as bytes.
+- Browser capture does not request image resources that trigger the upstream `text_body` warning.
 - A normal Bilibili popular response produces child video jobs up to `video_limit`.
 - Zero candidates cannot produce a successful discovery module or root job.
 - Failures retain sanitized, actionable evidence without exposing authentication data.
