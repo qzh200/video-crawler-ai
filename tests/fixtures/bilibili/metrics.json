@@ -1,0 +1,14 @@
+{
+  "code": 0,
+  "data": {
+    "stat": {
+      "view": 123456,
+      "like": 2345,
+      "favorite": 456,
+      "share": 67,
+      "reply": 89,
+      "danmaku": 1012,
+      "coin": 345
+    }
+  }
+}
