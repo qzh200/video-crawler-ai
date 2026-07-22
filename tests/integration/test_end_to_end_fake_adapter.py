@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -219,6 +219,26 @@ async def test_api_worker_and_storage_are_wired_end_to_end(
             )
             assert profile.status_code == 201
             profile_id = profile.json()["profile_id"]
+            verification = await client.post(
+                f"/api/v1/auth-profiles/{profile_id}/verify"
+            )
+            assert verification.status_code == 202
+            verification_id = UUID(verification.json()["verification_id"])
+            now = datetime.now(UTC)
+            claimed = await container.profile_verifications.claim_next(
+                "integration-worker",
+                now,
+                stale_before=now - timedelta(seconds=30),
+            )
+            assert claimed is not None
+            assert claimed.verification_id == verification_id
+            await container.execute_profile_verification(verification_id)
+            verified = await client.get(
+                f"/api/v1/auth-profiles/{profile_id}/verifications/{verification_id}"
+            )
+            assert verified.status_code == 200
+            assert verified.json()["status"] == "succeeded"
+            assert verified.json()["profile_status"] == "active"
             created = await client.post(
                 "/api/v1/crawl-jobs",
                 json={

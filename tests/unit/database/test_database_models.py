@@ -5,6 +5,7 @@ from video_crawler.infrastructure.database.base import Base
 
 EXPECTED_TABLES = {
     "auth_profile_leases",
+    "auth_profile_verifications",
     "auth_profiles",
     "comments",
     "crawl_jobs",
@@ -52,6 +53,8 @@ EXPECTED_INDEXES = {
     "ix_idempotency_expiry",
     "ix_metric_snapshots_video_time",
     "ix_profile_leases_expiry",
+    "ix_profile_verifications_claim",
+    "ix_profile_verifications_profile",
     "ix_raw_expiry",
     "ix_timed_item_cursor",
 }
@@ -81,4 +84,4 @@ def test_models_preserve_named_constraints_and_indexes() -> None:
 
     assert unique_names == EXPECTED_UNIQUE_CONSTRAINTS
     assert index_names == EXPECTED_INDEXES
-    assert len(foreign_key_names) == 29
+    assert len(foreign_key_names) == 30
