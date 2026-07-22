@@ -30,6 +30,25 @@ CREATE TABLE auth_profiles (
   CONSTRAINT fk_auth_profiles_platform FOREIGN KEY (platform_id) REFERENCES platforms(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+CREATE TABLE auth_profile_verifications (
+  id BINARY(16) NOT NULL,
+  auth_profile_id BINARY(16) NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  worker_id VARCHAR(100) NULL,
+  process_pid INT NULL,
+  process_group_id INT NULL,
+  requested_at DATETIME(3) NOT NULL,
+  started_at DATETIME(3) NULL,
+  heartbeat_at DATETIME(3) NULL,
+  finished_at DATETIME(3) NULL,
+  error_code VARCHAR(100) NULL,
+  error_message TEXT NULL,
+  PRIMARY KEY (id),
+  KEY ix_profile_verifications_claim (status, requested_at),
+  KEY ix_profile_verifications_profile (auth_profile_id, requested_at),
+  CONSTRAINT fk_profile_verifications_profile FOREIGN KEY (auth_profile_id) REFERENCES auth_profiles(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
 CREATE TABLE crawl_jobs (
   id BINARY(16) NOT NULL,
   parent_job_id BINARY(16) NULL,

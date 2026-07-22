@@ -15,6 +15,9 @@ from video_crawler.infrastructure.database.models.metrics import (
     MetricValue,
 )
 from video_crawler.infrastructure.database.models.platforms import AuthProfile, Platform
+from video_crawler.infrastructure.database.models.profile_verifications import (
+    AuthProfileVerification,
+)
 from video_crawler.infrastructure.database.models.timed_text import (
     TimedTextItem,
     TimedTextStream,
@@ -23,6 +26,7 @@ from video_crawler.infrastructure.database.models.timed_text import (
 __all__ = [
     "AuthProfile",
     "AuthProfileLease",
+    "AuthProfileVerification",
     "Comment",
     "CrawlJob",
     "CrawlModuleRun",
