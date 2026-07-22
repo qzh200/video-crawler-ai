@@ -104,6 +104,7 @@ POST /api/v1/auth-profiles
 GET /api/v1/auth-profiles
 GET /api/v1/auth-profiles/{profile_id}
 POST /api/v1/auth-profiles/{profile_id}/verify
+GET /api/v1/auth-profiles/{profile_id}/verifications/{verification_id}
 POST /api/v1/auth-profiles/{profile_id}/enable
 POST /api/v1/auth-profiles/{profile_id}/disable
 ```
@@ -118,7 +119,27 @@ POST /api/v1/auth-profiles/{profile_id}/disable
 }
 ```
 
-Profile API 不返回 Cookie 或文件内容。
+Profile API 不返回 Cookie 或文件内容。新 Profile 初始状态为 `expired`。调用 `verify` 返回
+HTTP 202，并创建或复用一个异步验证请求：
+
+```json
+{
+  "verification_id": "01900000-0000-7000-8000-000000000002",
+  "profile_id": "01900000-0000-7000-8000-000000000001",
+  "status": "pending",
+  "profile_status": "expired",
+  "requested_at": "2026-07-22T12:30:00Z",
+  "started_at": null,
+  "finished_at": null,
+  "error_code": null,
+  "error_message": null
+}
+```
+
+验证请求状态为 `pending`、`running`、`succeeded` 或 `failed`。客户端使用 Profile 范围内的
+查询接口轮询；只有 `status=succeeded` 且 `profile_status=active` 才表示登录态有效。Worker
+未运行时请求保持 `pending`，API 不会自行读取 Profile 或把等待误判为 `expired`。重复调用
+`verify` 会复用尚未终态的请求；终态后再次调用会创建新请求。
 
 创建任务前必须确认 Profile 存在且状态为 `active`。Profile 不存在时返回 HTTP 404
 `PROFILE_NOT_FOUND`；状态为 `expired` 或 `disabled` 时返回 HTTP 409
@@ -216,6 +237,7 @@ GET /health/ready
 - `JOB_NOT_CANCELLABLE`；
 - `JOB_NOT_RESUMABLE`；
 - `PROFILE_NOT_FOUND`；
+- `PROFILE_VERIFICATION_NOT_FOUND`；
 - `PROFILE_NOT_ACTIVE`；
 - `DISCOVERY_EMPTY`；
 - `STORAGE_UNAVAILABLE`；

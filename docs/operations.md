@@ -100,11 +100,27 @@ $body = @{
 } | ConvertTo-Json
 $profile = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/auth-profiles -Headers $headers -ContentType 'application/json' -Body $body
 $profileId = $profile.profile_id
-Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/auth-profiles/$profileId/verify" -Headers $headers
+$verification = Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/auth-profiles/$profileId/verify" -Headers $headers
+$verificationId = $verification.verification_id
+$deadline = (Get-Date).AddMinutes(3)
+do {
+  Start-Sleep -Seconds 2
+  $verification = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/auth-profiles/$profileId/verifications/$verificationId" -Headers $headers
+  $verification | ConvertTo-Json -Depth 10
+} while ($verification.status -in @('pending', 'running') -and (Get-Date) -lt $deadline)
+if ($verification.status -ne 'succeeded' -or $verification.profile_status -ne 'active') {
+  throw "Profile verification failed: request=$($verification.status), profile=$($verification.profile_status), code=$($verification.error_code)"
+}
 ```
 
-只有验证结果为 `active` 才创建任务。验证失败时停止相关任务，重新执行交互登录，再调用
-`verify`；不要删除结构化结果。
+`verify` 返回 HTTP 202。API 只创建 `auth_profile_verifications` 请求；唯一 Worker 优先领取该
+请求，并在挂载 Profile 的独立子进程中执行 Adapter 登录验证。API 容器始终不挂载 Profile，
+也不运行 Crawl4AI。
+
+Worker 停止时验证请求会保持 `pending`，此时先执行 `docker compose up -d worker`，不要把
+等待状态当作登录失败。只有请求为 `succeeded` 且 `profile_status` 为 `active` 才创建任务。
+请求为 `failed` 时查看稳定的 `error_code`；请求成功但 Profile 为 `expired` 时重新执行交互
+登录，再创建新的验证请求。不要删除结构化结果。
 
 ## 6. 创建、查询、取消和续跑
 

@@ -10,7 +10,7 @@
 - 标准字段关系化，平台扩展使用 JSON；
 - 原始大响应保存在 MinIO。
 
-0.1.0 的 Alembic head 为 `0001_initial_schema`。迁移是唯一 schema 来源，可从空库执行：
+当前 Alembic head 为 `0002_profile_verifications`。迁移是唯一 schema 来源，可从空库执行：
 
 ```powershell
 docker compose run --rm migrate alembic upgrade head
@@ -23,6 +23,7 @@ docker compose run --rm migrate alembic upgrade head
 - `platforms`
 - `auth_profiles`
 - `auth_profile_leases`
+- `auth_profile_verifications`
 
 ### 内容定位
 
@@ -56,7 +57,12 @@ docker compose run --rm migrate alembic upgrade head
 
 - `raw_artifacts`
 
-以上 17 张表均由 `migrations/versions/0001_initial_schema.py` 创建；0.1.0 不创建规格外业务表。
+基础 17 张表由 `migrations/versions/0001_initial_schema.py` 创建；
+`migrations/versions/0002_profile_verifications.py` 只增加验证请求表。该表保存调度状态、
+Worker/进程标识、时间和脱敏错误，不保存 Cookie、令牌或浏览器文件。
+
+`auth_profile_verifications(status, requested_at)` 支持 Worker 领取；
+`auth_profile_verifications(auth_profile_id, requested_at)` 支持 Profile 范围内查询。
 
 ## 3. 关键唯一约束
 

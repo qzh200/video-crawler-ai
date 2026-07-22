@@ -70,10 +70,21 @@ $profileBody = @{
 } | ConvertTo-Json
 $profile = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/auth-profiles -Headers $headers -ContentType 'application/json' -Body $profileBody
 $profileId = $profile.profile_id
-Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/auth-profiles/$profileId/verify" -Headers $headers
+$verification = Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/auth-profiles/$profileId/verify" -Headers $headers
+$verificationId = $verification.verification_id
+$deadline = (Get-Date).AddMinutes(3)
+do {
+  Start-Sleep -Seconds 2
+  $verification = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/auth-profiles/$profileId/verifications/$verificationId" -Headers $headers
+} while ($verification.status -in @('pending', 'running') -and (Get-Date) -lt $deadline)
+if ($verification.status -ne 'succeeded' -or $verification.profile_status -ne 'active') {
+  throw "Profile verification failed: request=$($verification.status), profile=$($verification.profile_status)"
+}
 ```
 
-服务不接收 Cookie JSON，也不会把 Cookie、Local Storage 或登录令牌写入 MySQL。
+验证接口返回 HTTP 202，由唯一 Worker 在挂载 Profile 的独立子进程中完成；API 不挂载
+Profile，也不运行 Crawl4AI。服务不接收 Cookie JSON，也不会把 Cookie、Local Storage 或
+登录令牌写入 MySQL。
 
 ## 创建、取消和续跑任务
 
@@ -115,6 +126,7 @@ POST /api/v1/auth-profiles
 GET  /api/v1/auth-profiles
 GET  /api/v1/auth-profiles/{profile_id}
 POST /api/v1/auth-profiles/{profile_id}/verify
+GET  /api/v1/auth-profiles/{profile_id}/verifications/{verification_id}
 POST /api/v1/auth-profiles/{profile_id}/enable
 POST /api/v1/auth-profiles/{profile_id}/disable
 

@@ -28,6 +28,7 @@ APPROVED_OPENAPI_OPERATIONS = {
     "/api/v1/auth-profiles": {"get", "post"},
     "/api/v1/auth-profiles/{profile_id}": {"get"},
     "/api/v1/auth-profiles/{profile_id}/verify": {"post"},
+    "/api/v1/auth-profiles/{profile_id}/verifications/{verification_id}": {"get"},
     "/api/v1/auth-profiles/{profile_id}/enable": {"post"},
     "/api/v1/auth-profiles/{profile_id}/disable": {"post"},
     "/api/v1/videos/{video_id}/metrics": {"get"},
@@ -84,6 +85,46 @@ def test_initial_migration_contains_only_approved_tables() -> None:
     }
 
     assert created_tables == APPROVED_TABLES
+
+
+def test_profile_verification_migration_adds_only_its_request_table() -> None:
+    migration = REPOSITORY_ROOT / "migrations" / "versions" / "0002_profile_verifications.py"
+    tree = ast.parse(migration.read_text(encoding="utf-8"))
+    created_tables = {
+        call.args[0].value
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "op"
+        and call.func.attr == "create_table"
+        and call.args
+        and isinstance(call.args[0], ast.Constant)
+        and isinstance(call.args[0].value, str)
+    }
+
+    assert created_tables == {"auth_profile_verifications"}
+
+
+def test_profile_verification_docs_describe_async_worker_flow() -> None:
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    api_contract = (REPOSITORY_ROOT / "docs" / "api-contract.md").read_text(
+        encoding="utf-8"
+    )
+    operations = (REPOSITORY_ROOT / "docs" / "operations.md").read_text(
+        encoding="utf-8"
+    )
+    schema = (
+        REPOSITORY_ROOT / "docs" / "architecture" / "database-schema.md"
+    ).read_text(encoding="utf-8")
+    combined = "\n".join((readme, api_contract, operations, schema))
+
+    assert "auth_profile_verifications" in combined
+    assert "PROFILE_VERIFICATION_NOT_FOUND" in api_contract
+    assert "202" in api_contract
+    assert "/verifications/$verificationId" in operations
+    assert "Worker 停止" in operations
+    assert "pending" in operations
 
 
 def test_worker_and_profile_concurrency_are_fixed_at_one() -> None:
