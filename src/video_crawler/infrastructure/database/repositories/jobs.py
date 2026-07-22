@@ -71,8 +71,10 @@ class JobRepository:
             (
                 await session.scalars(
                     select(CrawlJob.id)
+                    .join(AuthProfile, CrawlJob.auth_profile_id == AuthProfile.id)
                     .where(
                         CrawlJob.status == "pending",
+                        AuthProfile.status == "active",
                         (CrawlJob.next_retry_at.is_(None) | (CrawlJob.next_retry_at <= now)),
                     )
                     .order_by(CrawlJob.id.asc())

@@ -89,6 +89,82 @@ async def test_claim_next_pauses_jobs_for_inactive_profiles(
     assert resumed is not None and resumed.id == expired_job_id
 
 
+@pytest.mark.asyncio
+async def test_claim_next_does_not_starve_active_jobs_behind_inactive_queue(
+    database: DatabaseSessionFactory,
+) -> None:
+    now = datetime.now(UTC)
+    inactive_profile_id = UUID(int=901)
+    active_profile_id = UUID(int=902)
+    active_job_id = UUID(int=2000)
+    async with database.transaction() as session:
+        platform = Platform(
+            platform_key=f"test-{uuid4().hex[:12]}",
+            display_name="Test",
+            adapter_version="1",
+            created_at=now.replace(tzinfo=None),
+        )
+        session.add(platform)
+        await session.flush()
+        session.add_all(
+            [
+                AuthProfile(
+                    id=inactive_profile_id,
+                    platform_id=platform.id,
+                    profile_name="inactive-prefix",
+                    profile_directory=f"inactive-{uuid4().hex[:8]}",
+                    status="expired",
+                    created_at=now.replace(tzinfo=None),
+                    updated_at=now.replace(tzinfo=None),
+                ),
+                AuthProfile(
+                    id=active_profile_id,
+                    platform_id=platform.id,
+                    profile_name="active-tail",
+                    profile_directory=f"active-{uuid4().hex[:8]}",
+                    status="active",
+                    created_at=now.replace(tzinfo=None),
+                    updated_at=now.replace(tzinfo=None),
+                ),
+            ]
+        )
+        await session.flush()
+        for value in range(1000, 1101):
+            job_id = UUID(int=value)
+            session.add(
+                CrawlJob(
+                    id=job_id,
+                    root_job_id=job_id,
+                    platform_id=platform.id,
+                    auth_profile_id=inactive_profile_id,
+                    source_url="https://example.test/inactive",
+                    job_type="video",
+                    status="pending",
+                    effective_strategy={},
+                    created_at=now.replace(tzinfo=None),
+                    updated_at=now.replace(tzinfo=None),
+                )
+            )
+        session.add(
+            CrawlJob(
+                id=active_job_id,
+                root_job_id=active_job_id,
+                platform_id=platform.id,
+                auth_profile_id=active_profile_id,
+                source_url="https://example.test/active",
+                job_type="video",
+                status="pending",
+                effective_strategy={},
+                created_at=now.replace(tzinfo=None),
+                updated_at=now.replace(tzinfo=None),
+            )
+        )
+
+    claimed = await JobRepository(database).claim_next("worker", now)
+
+    assert claimed is not None and claimed.id == active_job_id
+
+
 async def test_claim_next_skips_locked_jobs(database: DatabaseSessionFactory) -> None:
     now = datetime.now(UTC)
     profile_id = uuid4()
