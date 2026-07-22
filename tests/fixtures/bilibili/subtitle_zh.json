@@ -1,0 +1,16 @@
+{
+  "body": [
+    {
+      "id": "cue-1",
+      "from": 1.25,
+      "to": 3.5,
+      "location": 2,
+      "content": "Synthetic subtitle one"
+    },
+    {
+      "from": 4.0,
+      "to": 4.75,
+      "content": "Synthetic subtitle two"
+    }
+  ]
+}

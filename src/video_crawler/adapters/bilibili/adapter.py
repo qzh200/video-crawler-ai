@@ -15,10 +15,12 @@ from video_crawler.adapters.bilibili.resolver import (
     PLATFORM_KEY,
     resolve_bilibili_target,
 )
+from video_crawler.adapters.bilibili.timed_text import fetch_bilibili_timed_text
 from video_crawler.domain.comments import CommentBatch
 from video_crawler.domain.metrics import MetricResult
 from video_crawler.domain.strategy import CrawlStrategy
 from video_crawler.domain.targets import DiscoveredTarget, ResolvedTarget, VideoTarget
+from video_crawler.domain.timed_text import TimedTextBatch
 
 
 class BilibiliAdapter:
@@ -55,3 +57,11 @@ class BilibiliAdapter:
         strategy: CrawlStrategy,
     ) -> AsyncIterator[CommentBatch]:
         return fetch_bilibili_comments(context, target, strategy)
+
+    def fetch_timed_text(
+        self,
+        context: AdapterContext,
+        target: VideoTarget,
+        strategy: CrawlStrategy,
+    ) -> AsyncIterator[TimedTextBatch]:
+        return fetch_bilibili_timed_text(context, target, strategy)
