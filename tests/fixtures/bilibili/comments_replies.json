@@ -1,0 +1,44 @@
+{
+  "code": 0,
+  "data": {
+    "page": {
+      "num": 1,
+      "size": 2,
+      "count": 3
+    },
+    "replies": [
+      {
+        "rpid": 2001,
+        "root": 1001,
+        "parent": 1001,
+        "member": {
+          "mid": "9101",
+          "uname": "FixtureReplyOne"
+        },
+        "content": {
+          "message": "Synthetic direct reply"
+        },
+        "like": 2,
+        "rcount": 1,
+        "ctime": 1700000200,
+        "state": 0
+      },
+      {
+        "rpid": 2002,
+        "root": 1001,
+        "parent": 2001,
+        "member": {
+          "mid": "9102",
+          "uname": "FixtureReplyTwo"
+        },
+        "content": {
+          "message": "Synthetic nested reply"
+        },
+        "like": 1,
+        "rcount": 0,
+        "ctime": 1700000300,
+        "state": 0
+      }
+    ]
+  }
+}

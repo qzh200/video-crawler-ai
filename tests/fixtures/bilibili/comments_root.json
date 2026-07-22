@@ -1,0 +1,43 @@
+{
+  "code": 0,
+  "data": {
+    "cursor": {
+      "is_end": false,
+      "next": 2
+    },
+    "replies": [
+      {
+        "rpid": 1001,
+        "root": 0,
+        "parent": 0,
+        "member": {
+          "mid": "9001",
+          "uname": "FixtureRootOne"
+        },
+        "content": {
+          "message": "Synthetic root comment one"
+        },
+        "like": 12,
+        "rcount": 3,
+        "ctime": 1700000000,
+        "state": 0
+      },
+      {
+        "rpid": 1002,
+        "root": 0,
+        "parent": 0,
+        "member": {
+          "mid": "9002",
+          "uname": "FixtureRootTwo"
+        },
+        "content": {
+          "message": "Synthetic root comment two"
+        },
+        "like": 4,
+        "rcount": 0,
+        "ctime": 1700000100,
+        "state": 0
+      }
+    ]
+  }
+}
