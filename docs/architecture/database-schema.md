@@ -10,6 +10,12 @@
 - 标准字段关系化，平台扩展使用 JSON；
 - 原始大响应保存在 MinIO。
 
+0.1.0 的 Alembic head 为 `0001_initial_schema`。迁移是唯一 schema 来源，可从空库执行：
+
+```powershell
+docker compose run --rm migrate alembic upgrade head
+```
+
 ## 2. 表清单
 
 ### 平台与认证
@@ -49,6 +55,8 @@
 ### 原始对象
 
 - `raw_artifacts`
+
+以上 17 张表均由 `migrations/versions/0001_initial_schema.py` 创建；0.1.0 不创建规格外业务表。
 
 ## 3. 关键唯一约束
 

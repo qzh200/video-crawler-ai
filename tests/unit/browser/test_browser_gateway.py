@@ -96,6 +96,25 @@ async def test_browser_gateway_applies_profile_and_page_timeout(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_browser_gateway_can_start_visible_for_interactive_login(tmp_path: Path) -> None:
+    crawler = FakeCrawler()
+    gateway = Crawl4AIBrowserGateway(
+        profile_root=tmp_path,
+        profile_directory="profile-1",
+        headless=False,
+        crawler_factory=lambda: crawler,
+    )
+
+    await gateway.open_page("https://example.test/login", timeout_seconds=30)
+
+    assert crawler.config == {
+        "user_data_dir": str(tmp_path / "profile-1"),
+        "use_persistent_context": True,
+        "headless": False,
+    }
+
+
+@pytest.mark.asyncio
 async def test_browser_gateway_exposes_optional_network_capture(tmp_path: Path) -> None:
     crawler = FakeCrawler()
     crawler.page.captured_responses = (

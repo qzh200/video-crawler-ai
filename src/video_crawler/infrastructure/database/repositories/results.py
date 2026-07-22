@@ -3,11 +3,18 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from hashlib import sha256
+from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.mysql import insert
 
+from video_crawler.application.result_queries import (
+    CommentRecord,
+    MetricSnapshotRecord,
+    MetricValueRecord,
+    TimedTextRecord,
+)
 from video_crawler.domain.comments import CommentBatch
 from video_crawler.domain.metrics import MetricResult
 from video_crawler.domain.timed_text import (
@@ -234,3 +241,184 @@ class ResultRepository:
                     )
                 )
             return int(snapshot.id)
+
+    async def list_metric_snapshots(
+        self,
+        video_id: int,
+        *,
+        after: tuple[datetime, int] | None,
+        limit: int,
+    ) -> list[MetricSnapshotRecord]:
+        async with self.sessions() as session:
+            statement = select(MetricSnapshot).where(MetricSnapshot.video_id == video_id)
+            if after is not None:
+                captured_at = _db_time(after[0])
+                statement = statement.where(
+                    or_(
+                        MetricSnapshot.captured_at < captured_at,
+                        and_(
+                            MetricSnapshot.captured_at == captured_at,
+                            MetricSnapshot.id < after[1],
+                        ),
+                    )
+                )
+            snapshots = (
+                (
+                    await session.execute(
+                        statement.order_by(
+                            MetricSnapshot.captured_at.desc(),
+                            MetricSnapshot.id.desc(),
+                        ).limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            snapshot_ids = [snapshot.id for snapshot in snapshots]
+            values_by_snapshot: dict[int, dict[str, MetricValueRecord]] = {
+                snapshot_id: {} for snapshot_id in snapshot_ids
+            }
+            if snapshot_ids:
+                values = (
+                    await session.execute(
+                        select(MetricValue).where(MetricValue.snapshot_id.in_(snapshot_ids))
+                    )
+                ).scalars()
+                for value in values:
+                    values_by_snapshot[value.snapshot_id][value.metric_key] = MetricValueRecord(
+                        value=value.metric_value,
+                        status=value.status,
+                    )
+        return [
+            MetricSnapshotRecord(
+                snapshot_id=snapshot.id,
+                captured_at=snapshot.captured_at.replace(tzinfo=UTC),
+                metrics=values_by_snapshot[snapshot.id],
+            )
+            for snapshot in snapshots
+        ]
+
+    async def latest_metric_snapshot(self, video_id: int) -> MetricSnapshotRecord | None:
+        rows = await self.list_metric_snapshots(video_id, after=None, limit=1)
+        return rows[0] if rows else None
+
+    async def list_comments(
+        self,
+        video_id: int,
+        *,
+        after: tuple[datetime | None, int] | None,
+        limit: int,
+        root_only: bool,
+        root_comment_id: int | None,
+        order: Literal["asc", "desc"],
+    ) -> list[CommentRecord]:
+        epoch = datetime(1970, 1, 1)
+        published = func.coalesce(Comment.published_at, epoch)
+        statement = select(Comment).where(Comment.video_id == video_id)
+        if root_only:
+            statement = statement.where(Comment.parent_comment_id.is_(None))
+        if root_comment_id is not None:
+            statement = statement.where(Comment.root_comment_id == root_comment_id)
+        if after is not None:
+            cursor_time = _db_time(after[0]) if after[0] is not None else epoch
+            if order == "asc":
+                statement = statement.where(
+                    or_(
+                        published > cursor_time,
+                        and_(published == cursor_time, Comment.id > after[1]),
+                    )
+                )
+            else:
+                statement = statement.where(
+                    or_(
+                        published < cursor_time,
+                        and_(published == cursor_time, Comment.id < after[1]),
+                    )
+                )
+        ordering = (
+            (published.asc(), Comment.id.asc())
+            if order == "asc"
+            else (published.desc(), Comment.id.desc())
+        )
+        async with self.sessions() as session:
+            rows = (
+                (await session.execute(statement.order_by(*ordering).limit(limit))).scalars().all()
+            )
+        return [
+            CommentRecord(
+                id=row.id,
+                platform_comment_id=row.platform_comment_id,
+                root_comment_id=row.root_comment_id,
+                parent_comment_id=row.parent_comment_id,
+                depth=row.depth,
+                author_platform_id=row.author_platform_id,
+                author_name=row.author_name,
+                content=row.content,
+                like_count=row.like_count,
+                reply_count=row.reply_count,
+                published_at=row.published_at.replace(tzinfo=UTC) if row.published_at else None,
+                status=row.status,
+                extra=dict(row.extra),
+            )
+            for row in rows
+        ]
+
+    async def list_timed_text(
+        self,
+        unit_id: int,
+        *,
+        after: tuple[int, int] | None,
+        limit: int,
+        content_type: Literal["danmaku", "subtitle"] | None,
+        language_code: str | None,
+        start_ms: int | None,
+        end_ms: int | None,
+    ) -> list[TimedTextRecord]:
+        statement = (
+            select(TimedTextItem, TimedTextStream)
+            .join(TimedTextStream, TimedTextItem.stream_id == TimedTextStream.id)
+            .where(TimedTextStream.video_unit_id == unit_id)
+        )
+        if content_type is not None:
+            statement = statement.where(TimedTextStream.content_type == content_type)
+        if language_code is not None:
+            statement = statement.where(
+                TimedTextStream.language_code_normalized == language_code.strip().lower()
+            )
+        if start_ms is not None:
+            statement = statement.where(TimedTextItem.start_ms >= start_ms)
+        if end_ms is not None:
+            statement = statement.where(TimedTextItem.start_ms <= end_ms)
+        if after is not None:
+            statement = statement.where(
+                or_(
+                    TimedTextItem.start_ms > after[0],
+                    and_(
+                        TimedTextItem.start_ms == after[0],
+                        TimedTextItem.id > after[1],
+                    ),
+                )
+            )
+        async with self.sessions() as session:
+            rows = (
+                await session.execute(
+                    statement.order_by(TimedTextItem.start_ms.asc(), TimedTextItem.id.asc()).limit(
+                        limit
+                    )
+                )
+            ).all()
+        return [
+            TimedTextRecord(
+                id=item.id,
+                stream_id=item.stream_id,
+                content_type=stream.content_type,
+                language_code=stream.language_code,
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
+                text=item.text,
+                published_at=item.published_at.replace(tzinfo=UTC) if item.published_at else None,
+                sender_ref=item.sender_ref,
+                attributes=dict(item.attributes),
+            )
+            for item, stream in rows
+        ]

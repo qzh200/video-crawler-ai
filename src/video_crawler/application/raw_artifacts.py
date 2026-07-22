@@ -119,9 +119,20 @@ class RawArtifactService:
             compression=compression_value,
         )
 
-    async def cleanup_expired(self, now: datetime) -> CleanupSummary:
+    async def cleanup_expired(
+        self,
+        now: datetime,
+        *,
+        temporary_stale_before: datetime | None = None,
+    ) -> CleanupSummary:
         current = now.astimezone(UTC).replace(tzinfo=None) if now.tzinfo else now
-        rows = await self.repository.list_expired(current)
+        temporary_cutoff_value = temporary_stale_before or now
+        temporary_cutoff = (
+            temporary_cutoff_value.astimezone(UTC).replace(tzinfo=None)
+            if temporary_cutoff_value.tzinfo
+            else temporary_cutoff_value
+        )
+        rows = () if self.retention_days == 0 else await self.repository.list_expired(current)
         expired = 0
         delete_failed = 0
         for row in rows:
@@ -144,7 +155,7 @@ class RawArtifactService:
                 if item.last_modified.tzinfo
                 else item.last_modified.replace(tzinfo=UTC)
             )
-            if modified.replace(tzinfo=None) <= current:
+            if modified.replace(tzinfo=None) <= temporary_cutoff:
                 try:
                     await self.storage.remove(self.bucket, item.object_name)
                 except Exception:

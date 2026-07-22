@@ -28,3 +28,9 @@ class AdapterRegistry[AdapterT: AdapterMatcher]:
             if adapter.match(url):
                 return adapter
         raise AdapterNotFoundError(url)
+
+    def get(self, platform_key: str) -> AdapterT:
+        try:
+            return self._adapters[platform_key]
+        except KeyError as error:
+            raise AdapterNotFoundError(platform_key) from error

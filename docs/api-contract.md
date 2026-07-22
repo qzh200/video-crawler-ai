@@ -1,6 +1,6 @@
 # FastAPI API Contract
 
-所有业务接口位于 `/api/v1`。启用固定 API Key 时，请求头为 `X-API-Key`。
+本文描述 0.1.0 实际发布接口。所有业务接口位于 `/api/v1`；启用固定 API Key 时，请求头为 `X-API-Key`。`/health/live` 和 `/health/ready` 始终公开。除本文列出的路径外，0.1.0 不提供其他业务接口。
 
 ## 1. 创建任务
 
@@ -44,7 +44,7 @@ Idempotency-Key: optional-string
 }
 ```
 
-同一 `Idempotency-Key` 在 24 小时内返回相同任务，状态码 `200`。
+同一 `Idempotency-Key` 和相同请求在 24 小时内返回原任务，状态码 `200`；同一键对应不同请求时返回 `409 IDEMPOTENCY_CONFLICT`。
 
 ## 2. 查询任务
 
@@ -140,6 +140,8 @@ GET /api/v1/videos/{video_id}/metrics/latest
 }
 ```
 
+列表按 `captured_at DESC, id DESC` 排序，使用不透明 `cursor` 继续 keyset 分页；`page_size` 默认 100、最大 1000。`latest` 没有快照时返回 `404 RESULT_NOT_FOUND`。
+
 ## 7. 评论
 
 ```http
@@ -169,7 +171,7 @@ GET /api/v1/video-units/{unit_id}/timed-text
 - `start_ms`；
 - `end_ms`；
 - `cursor`；
-- `page_size`。
+- `page_size`，默认 100，最大 1000。
 
 排序键：`start_ms, id`。
 
@@ -200,16 +202,15 @@ GET /health/ready
 }
 ```
 
-至少定义：
+0.1.0 API 会返回：
 
 - `VALIDATION_ERROR`；
 - `UNAUTHORIZED`；
+- `IDEMPOTENCY_CONFLICT`；
 - `JOB_NOT_FOUND`；
 - `JOB_NOT_CANCELLABLE`；
 - `JOB_NOT_RESUMABLE`；
 - `PROFILE_NOT_FOUND`；
-- `PROFILE_EXPIRED`；
-- `ADAPTER_NOT_FOUND`；
-- `TARGET_RESOLUTION_FAILED`；
 - `STORAGE_UNAVAILABLE`；
-- `UPSTREAM_ERROR`。
+- `INVALID_CURSOR`；
+- `RESULT_NOT_FOUND`。

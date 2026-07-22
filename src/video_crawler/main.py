@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
@@ -9,6 +11,7 @@ from fastapi.responses import JSONResponse
 from video_crawler.api.errors import ApiError, error_payload
 from video_crawler.api.router import api_router
 from video_crawler.api.routes import health
+from video_crawler.bootstrap import ApplicationContainer
 
 
 async def _api_error_handler(request: Request, error: Exception) -> JSONResponse:
@@ -59,8 +62,9 @@ def create_app(
     profile_service: Any | None = None,
     result_query_service: Any | None = None,
     health_service: Any | None = None,
+    lifespan: Any | None = None,
 ) -> FastAPI:
-    application = FastAPI(title="Video Crawler API", version="0.1.0")
+    application = FastAPI(title="Video Crawler API", version="0.1.0", lifespan=lifespan)
     application.state.job_service = job_service
     application.state.profile_service = profile_service
     application.state.result_query_service = result_query_service
@@ -73,4 +77,21 @@ def create_app(
     return application
 
 
-app = create_app()
+def create_production_app(
+    *,
+    container_factory: Callable[[], ApplicationContainer] = ApplicationContainer,
+) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> Any:
+        container = container_factory()
+        container.configure_api_app(application)
+        application.state.container = container
+        try:
+            yield
+        finally:
+            await container.aclose()
+
+    return create_app(lifespan=lifespan)
+
+
+app = create_production_app()
