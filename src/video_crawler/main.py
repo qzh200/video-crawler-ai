@@ -56,10 +56,12 @@ def create_app(
     *,
     job_service: Any | None = None,
     profile_service: Any | None = None,
+    result_query_service: Any | None = None,
 ) -> FastAPI:
     application = FastAPI(title="Video Crawler API", version="0.1.0")
     application.state.job_service = job_service
     application.state.profile_service = profile_service
+    application.state.result_query_service = result_query_service
     application.add_exception_handler(ApiError, _api_error_handler)
     application.add_exception_handler(RequestValidationError, _validation_error_handler)
     application.add_exception_handler(HTTPException, _http_error_handler)
