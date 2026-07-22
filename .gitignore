@@ -42,3 +42,4 @@ secrets/
 
 uv.lock
 openapi.json
+.worktrees/
