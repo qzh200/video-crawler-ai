@@ -19,7 +19,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
-    networks: [backend]
+    ports:
+      - "3306:3306"
+    networks: [frontend,backend]
     restart: unless-stopped
 
   minio:
