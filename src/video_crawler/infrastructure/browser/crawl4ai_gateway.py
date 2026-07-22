@@ -29,9 +29,11 @@ class Crawl4AIBrowserGateway:
         *,
         profile_root: Path,
         profile_directory: str,
+        headless: bool = True,
         crawler_factory: Callable[[], _Crawler] | None = None,
     ) -> None:
         self.profile_path = resolve_profile_path(profile_root, profile_directory)
+        self._headless = headless
         self._crawler_factory = crawler_factory or self._default_crawler_factory
         self._crawler: _Crawler | None = None
         self._current_page: BrowserPage | None = None
@@ -109,7 +111,7 @@ class Crawl4AIBrowserGateway:
         return {
             "user_data_dir": str(self.profile_path),
             "use_persistent_context": True,
-            "headless": True,
+            "headless": self._headless,
         }
 
     @staticmethod

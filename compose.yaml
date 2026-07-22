@@ -2,7 +2,7 @@ name: video-crawler
 
 services:
   mysql:
-    image: ${MYSQL_IMAGE}
+    image: ${MYSQL_IMAGE:-mysql:8.4.10}
     environment:
       MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
@@ -23,7 +23,7 @@ services:
     restart: unless-stopped
 
   minio:
-    image: ${MINIO_IMAGE}
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}
     command: server /data --console-address ':9001'
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
@@ -41,7 +41,7 @@ services:
     restart: unless-stopped
 
   minio-init:
-    image: ${MINIO_MC_IMAGE}
+    image: ${MINIO_MC_IMAGE:-quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z}
     depends_on:
       minio:
         condition: service_healthy
@@ -64,7 +64,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        PYTHON_IMAGE: ${PYTHON_IMAGE}
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.13-slim-bookworm}
     env_file: .env
     command: ["alembic", "upgrade", "head"]
     depends_on:
@@ -78,7 +78,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        PYTHON_IMAGE: ${PYTHON_IMAGE}
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.13-slim-bookworm}
     env_file: .env
     command: ["python", "-m", "uvicorn", "video_crawler.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
@@ -96,7 +96,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        PYTHON_IMAGE: ${PYTHON_IMAGE}
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.13-slim-bookworm}
     env_file: .env
     command: ["python", "-m", "video_crawler.worker.main"]
     init: true
@@ -110,6 +110,24 @@ services:
     shm_size: 2gb
     networks: [backend, egress]
     restart: unless-stopped
+
+  profile-login:
+    profiles: [manual]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.13-slim-bookworm}
+    env_file: .env
+    entrypoint: ["python", "-m", "video_crawler.cli"]
+    command: ["login", "--platform", "bilibili", "--profile", "bilibili-main"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - browser_profiles:/var/lib/video-crawler/browser-profiles
+    shm_size: 2gb
+    networks: [egress]
+    restart: "no"
 
 networks:
   frontend:
