@@ -18,7 +18,7 @@ dependencies = [
   "orjson>=3.10,<4",
   "pydantic>=2.9,<3",
   "pydantic-settings>=2.5,<3",
-  "sqlalchemy[asyncio]>=2.0.51,<2.1",
+  "sqlalchemy[asyncio]>=2.0.50,!=2.0.51,<2.1",
   "structlog>=24,<26",
   "uvicorn[standard]>=0.30,<1",
 ]
