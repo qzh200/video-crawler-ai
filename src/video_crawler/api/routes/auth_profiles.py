@@ -9,6 +9,7 @@ from video_crawler.api.errors import ApiError
 from video_crawler.api.schemas.auth_profiles import (
     AuthProfileCreateRequest,
     AuthProfileResponse,
+    AuthProfileVerificationResponse,
 )
 
 router = APIRouter(prefix="/auth-profiles", tags=["auth-profiles"])
@@ -21,7 +22,15 @@ class AuthProfileOperations(Protocol):
 
     async def get(self, profile_id: UUID) -> AuthProfileResponse | None: ...
 
-    async def verify(self, profile_id: UUID) -> AuthProfileResponse | None: ...
+    async def request_verification(
+        self, profile_id: UUID
+    ) -> AuthProfileVerificationResponse | None: ...
+
+    async def get_verification(
+        self,
+        profile_id: UUID,
+        verification_id: UUID,
+    ) -> AuthProfileVerificationResponse | None: ...
 
     async def enable(self, profile_id: UUID) -> AuthProfileResponse | None: ...
 
@@ -72,12 +81,42 @@ async def get_profile(
     return _require_profile(await service.get(profile_id))
 
 
-@router.post("/{profile_id}/verify", response_model=AuthProfileResponse)
+@router.post(
+    "/{profile_id}/verify",
+    response_model=AuthProfileVerificationResponse,
+    status_code=202,
+)
 async def verify_profile(
     profile_id: UUID,
     service: Annotated[AuthProfileOperations, Depends(get_profile_service)],
-) -> AuthProfileResponse:
-    return _require_profile(await service.verify(profile_id))
+) -> AuthProfileVerificationResponse:
+    verification = await service.request_verification(profile_id)
+    if verification is None:
+        raise ApiError(
+            status_code=404,
+            code="PROFILE_NOT_FOUND",
+            message="auth Profile was not found",
+        )
+    return verification
+
+
+@router.get(
+    "/{profile_id}/verifications/{verification_id}",
+    response_model=AuthProfileVerificationResponse,
+)
+async def get_profile_verification(
+    profile_id: UUID,
+    verification_id: UUID,
+    service: Annotated[AuthProfileOperations, Depends(get_profile_service)],
+) -> AuthProfileVerificationResponse:
+    verification = await service.get_verification(profile_id, verification_id)
+    if verification is None:
+        raise ApiError(
+            status_code=404,
+            code="PROFILE_VERIFICATION_NOT_FOUND",
+            message="Profile verification request was not found",
+        )
+    return verification
 
 
 @router.post("/{profile_id}/enable", response_model=AuthProfileResponse)

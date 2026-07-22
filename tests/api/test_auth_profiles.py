@@ -9,6 +9,7 @@ from video_crawler.api.dependencies.auth import require_api_key
 from video_crawler.api.schemas.auth_profiles import (
     AuthProfileCreateRequest,
     AuthProfileResponse,
+    AuthProfileVerificationResponse,
 )
 from video_crawler.main import create_app
 
@@ -23,6 +24,7 @@ class UnusedJobService:
 class RecordingProfileService:
     def __init__(self) -> None:
         self.profile: AuthProfileResponse | None = None
+        self.verification: AuthProfileVerificationResponse | None = None
         self.calls: list[str] = []
 
     async def create(self, request: AuthProfileCreateRequest) -> AuthProfileResponse:
@@ -47,14 +49,36 @@ class RecordingProfileService:
         self.calls.append("get")
         return self.profile if profile_id == PROFILE_ID else None
 
-    async def verify(self, profile_id: UUID) -> AuthProfileResponse | None:
-        self.calls.append("verify")
+    async def request_verification(
+        self, profile_id: UUID
+    ) -> AuthProfileVerificationResponse | None:
+        self.calls.append("request_verification")
         if self.profile is None or profile_id != PROFILE_ID:
             return None
-        self.profile = self.profile.model_copy(
-            update={"status": "active", "last_verified_at": NOW, "updated_at": NOW}
+        self.verification = AuthProfileVerificationResponse(
+            verification_id=UUID("01900000-0000-7000-8000-000000000011"),
+            profile_id=profile_id,
+            status="pending",
+            profile_status="expired",
+            requested_at=NOW,
+            started_at=None,
+            finished_at=None,
+            error_code=None,
+            error_message=None,
         )
-        return self.profile
+        return self.verification
+
+    async def get_verification(
+        self,
+        profile_id: UUID,
+        verification_id: UUID,
+    ) -> AuthProfileVerificationResponse | None:
+        self.calls.append("get_verification")
+        if self.verification is None:
+            return None
+        if profile_id != PROFILE_ID or verification_id != self.verification.verification_id:
+            return None
+        return self.verification
 
     async def enable(self, profile_id: UUID) -> AuthProfileResponse | None:
         self.calls.append("enable")
@@ -111,12 +135,27 @@ def test_profile_endpoints_never_return_browser_state() -> None:
     profile_id = created.json()["profile_id"]
     assert client.get("/api/v1/auth-profiles").status_code == 200
     assert client.get(f"/api/v1/auth-profiles/{profile_id}").status_code == 200
-    assert client.post(f"/api/v1/auth-profiles/{profile_id}/verify").status_code == 200
+    requested = client.post(f"/api/v1/auth-profiles/{profile_id}/verify")
+    assert requested.status_code == 202
+    assert requested.json()["status"] == "pending"
+    verification_id = requested.json()["verification_id"]
+    fetched = client.get(
+        f"/api/v1/auth-profiles/{profile_id}/verifications/{verification_id}"
+    )
+    assert fetched.status_code == 200
     disabled = client.post(f"/api/v1/auth-profiles/{profile_id}/disable")
     assert disabled.json()["status"] == "disabled"
     enabled = client.post(f"/api/v1/auth-profiles/{profile_id}/enable")
     assert enabled.json()["status"] == "active"
-    assert profiles.calls == ["create", "list", "get", "verify", "disable", "enable"]
+    assert profiles.calls == [
+        "create",
+        "list",
+        "get",
+        "request_verification",
+        "get_verification",
+        "disable",
+        "enable",
+    ]
 
 
 def test_missing_profile_returns_structured_not_found() -> None:
@@ -126,3 +165,37 @@ def test_missing_profile_returns_structured_not_found() -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "PROFILE_NOT_FOUND"
+
+
+def test_missing_profile_cannot_request_verification() -> None:
+    client, _ = _client()
+
+    response = client.post(
+        "/api/v1/auth-profiles/01900000-0000-7000-8000-000000000099/verify"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROFILE_NOT_FOUND"
+
+
+def test_verification_lookup_is_scoped_to_profile() -> None:
+    client, profiles = _client()
+    client.post(
+        "/api/v1/auth-profiles",
+        json={
+            "platform": "example",
+            "profile_name": "main",
+            "profile_directory": "example-main",
+        },
+    )
+    requested = client.post(f"/api/v1/auth-profiles/{PROFILE_ID}/verify")
+    verification_id = requested.json()["verification_id"]
+
+    response = client.get(
+        "/api/v1/auth-profiles/01900000-0000-7000-8000-000000000099/"
+        f"verifications/{verification_id}"
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "PROFILE_VERIFICATION_NOT_FOUND"
+    assert profiles.calls[-1] == "get_verification"

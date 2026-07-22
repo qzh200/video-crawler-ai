@@ -31,3 +31,15 @@ class AuthProfileResponse(BaseModel):
     last_verified_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class AuthProfileVerificationResponse(BaseModel):
+    verification_id: UUID
+    profile_id: UUID
+    status: Literal["pending", "running", "succeeded", "failed"]
+    profile_status: Literal["active", "expired", "disabled"]
+    requested_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    error_code: str | None
+    error_message: str | None

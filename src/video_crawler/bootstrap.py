@@ -17,6 +17,7 @@ from video_crawler.adapters.registry import AdapterRegistry
 from video_crawler.api.schemas.auth_profiles import (
     AuthProfileCreateRequest,
     AuthProfileResponse,
+    AuthProfileVerificationResponse,
 )
 from video_crawler.application.auth_profiles import ProfileLeaseService
 from video_crawler.application.cursors import CursorCodec
@@ -49,6 +50,10 @@ from video_crawler.infrastructure.database.repositories.jobs import (
     SqlAlchemyJobStore,
     SqlAlchemyModuleStateStore,
     SqlAlchemyWorkerStateStore,
+)
+from video_crawler.infrastructure.database.repositories.profile_verifications import (
+    ProfileVerificationRecord,
+    ProfileVerificationRepository,
 )
 from video_crawler.infrastructure.database.repositories.results import ResultRepository
 from video_crawler.infrastructure.database.session import DatabaseSessionFactory
@@ -255,7 +260,7 @@ class _AuthProfileOperations:
                     platform_id=platform.id,
                     profile_name=request.profile_name,
                     profile_directory=request.profile_directory,
-                    status="active",
+                    status="expired",
                     created_at=now,
                     updated_at=now,
                 )
@@ -295,23 +300,26 @@ class _AuthProfileOperations:
         profile = await self.get(profile_id)
         return None if profile is None else profile.status
 
-    async def verify(self, profile_id: UUID) -> AuthProfileResponse | None:
-        profile = await self.get(profile_id)
-        if profile is None:
-            return None
-        valid = await self._container.verify_profile(profile)
-        now = datetime.now(UTC).replace(tzinfo=None)
-        async with self._container.sessions.transaction() as session:
-            await session.execute(
-                update(AuthProfile)
-                .where(AuthProfile.id == profile_id)
-                .values(
-                    status="active" if valid else "expired",
-                    last_verified_at=now,
-                    updated_at=now,
-                )
-            )
-        return await self.get(profile_id)
+    async def request_verification(
+        self,
+        profile_id: UUID,
+    ) -> AuthProfileVerificationResponse | None:
+        record = await self._container.profile_verifications.request(
+            profile_id,
+            datetime.now(UTC),
+        )
+        return _verification_response(record)
+
+    async def get_verification(
+        self,
+        profile_id: UUID,
+        verification_id: UUID,
+    ) -> AuthProfileVerificationResponse | None:
+        record = await self._container.profile_verifications.get(
+            profile_id,
+            verification_id,
+        )
+        return _verification_response(record)
 
     async def enable(self, profile_id: UUID) -> AuthProfileResponse | None:
         return await self._set_status(profile_id, "active")
@@ -366,6 +374,7 @@ class ApplicationContainer:
         )
         self.job_store = SqlAlchemyJobStore(self.sessions)
         self.worker_states = SqlAlchemyWorkerStateStore(self.sessions)
+        self.profile_verifications = ProfileVerificationRepository(self.sessions)
         self.content = ContentRepository(self.sessions)
         self.results = ResultRepository(self.sessions)
         self.profile_service = _AuthProfileOperations(self)
@@ -611,4 +620,22 @@ def _profile_response(profile: AuthProfile, platform_key: str) -> AuthProfileRes
         else None,
         created_at=profile.created_at.replace(tzinfo=UTC),
         updated_at=profile.updated_at.replace(tzinfo=UTC),
+    )
+
+
+def _verification_response(
+    record: ProfileVerificationRecord | None,
+) -> AuthProfileVerificationResponse | None:
+    if record is None:
+        return None
+    return AuthProfileVerificationResponse(
+        verification_id=record.verification_id,
+        profile_id=record.profile_id,
+        status=cast(Any, record.status),
+        profile_status=cast(Any, record.profile_status),
+        requested_at=record.requested_at,
+        started_at=record.started_at,
+        finished_at=record.finished_at,
+        error_code=record.error_code,
+        error_message=record.error_message,
     )
