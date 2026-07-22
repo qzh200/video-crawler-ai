@@ -55,6 +55,22 @@ def spawn_task_process(run_id: UUID) -> SupervisedProcess:
     return SupervisedProcess(process=process, process_group_id=process.pid)
 
 
+def spawn_profile_verification_process(verification_id: UUID) -> SupervisedProcess:
+    """Start one Profile verification as an isolated process-group leader."""
+
+    process = subprocess.Popen(  # noqa: S603 - fixed interpreter and module entrypoint
+        [
+            sys.executable,
+            "-m",
+            "video_crawler.worker.profile_verification_entrypoint",
+            str(verification_id),
+        ],
+        shell=False,
+        start_new_session=True,
+    )
+    return SupervisedProcess(process=process, process_group_id=process.pid)
+
+
 def terminate_process_group(
     process_group_id: int,
     grace_seconds: float,

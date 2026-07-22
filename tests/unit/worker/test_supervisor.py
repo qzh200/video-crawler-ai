@@ -13,6 +13,16 @@ PROFILE_ID = UUID("01900000-0000-7000-8000-000000000003")
 NOW = datetime(2026, 7, 22, 9, 30, tzinfo=UTC)
 
 
+class FakeAuxiliaryRunner:
+    def __init__(self, handled: bool) -> None:
+        self.handled = handled
+        self.calls = 0
+
+    async def run_once(self) -> bool:
+        self.calls += 1
+        return self.handled
+
+
 class FakeStateStore:
     def __init__(self, *, cancel_requested: bool) -> None:
         self.cancel_requested = cancel_requested
@@ -195,3 +205,28 @@ async def test_running_process_heartbeats_run_and_profile_lease() -> None:
     assert ("heartbeat", PROFILE_ID, RUN_ID, NOW, 4321) in leases.events
     assert ("mark_finished", JOB_ID, RUN_ID, "success", NOW) in states.events
     assert leases.events[-1] == ("release", PROFILE_ID, RUN_ID)
+
+
+@pytest.mark.asyncio
+async def test_auxiliary_work_is_completed_before_crawl_claiming() -> None:
+    states = FakeStateStore(cancel_requested=False)
+    leases = FakeLeaseService()
+    auxiliary = FakeAuxiliaryRunner(handled=True)
+    supervisor = WorkerSupervisor(
+        worker_id="worker-1",
+        states=states,
+        leases=leases,
+        auxiliary_runner=auxiliary,
+        process_factory=lambda run_id: FakeProcess([0]),
+        terminate_group=lambda *_: "SIGTERM",
+        clock=lambda: NOW,
+        poll_interval_seconds=0.01,
+        heartbeat_interval_seconds=5.0,
+        terminate_grace_seconds=1.0,
+        kill_timeout_seconds=1.0,
+    )
+
+    assert await supervisor.run_once() is True
+    assert auxiliary.calls == 1
+    assert states.events == []
+    assert leases.events == []

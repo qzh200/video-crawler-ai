@@ -159,6 +159,38 @@ class ProfileVerificationRepository:
                 worker_id=worker_id,
             )
 
+    async def load_execution(
+        self,
+        verification_id: UUID,
+    ) -> ClaimedProfileVerification | None:
+        async with self.sessions() as session:
+            row = (
+                await session.execute(
+                    select(AuthProfileVerification, AuthProfile, Platform)
+                    .join(
+                        AuthProfile,
+                        AuthProfileVerification.auth_profile_id == AuthProfile.id,
+                    )
+                    .join(Platform, AuthProfile.platform_id == Platform.id)
+                    .where(
+                        AuthProfileVerification.id == verification_id,
+                        AuthProfileVerification.status == "running",
+                    )
+                )
+            ).one_or_none()
+        if row is None:
+            return None
+        verification, profile, platform = row
+        if verification.worker_id is None:
+            return None
+        return ClaimedProfileVerification(
+            verification_id=verification.id,
+            profile_id=profile.id,
+            platform=platform.platform_key,
+            profile_directory=profile.profile_directory,
+            worker_id=verification.worker_id,
+        )
+
     async def record_process(
         self,
         verification_id: UUID,

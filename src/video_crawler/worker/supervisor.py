@@ -82,6 +82,10 @@ class ProfileLeaseGateway(Protocol):
     async def release(self, auth_profile_id: UUID, crawl_run_id: UUID) -> bool: ...
 
 
+class AuxiliaryRunner(Protocol):
+    async def run_once(self) -> bool: ...
+
+
 class ProcessHandle(Protocol):
     @property
     def pid(self) -> int: ...
@@ -113,6 +117,7 @@ class WorkerSupervisor:
         worker_id: str,
         states: WorkerStateStore,
         leases: ProfileLeaseGateway,
+        auxiliary_runner: AuxiliaryRunner | None = None,
         process_factory: ProcessFactory = _default_process_factory,
         terminate_group: TerminateGroup = terminate_process_group,
         clock: Clock | None = None,
@@ -129,6 +134,7 @@ class WorkerSupervisor:
         self._worker_id = worker_id
         self._states = states
         self._leases = leases
+        self._auxiliary_runner = auxiliary_runner
         self._process_factory = process_factory
         self._terminate_group = terminate_group
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -145,6 +151,8 @@ class WorkerSupervisor:
                 await self._sleep(self._poll_interval_seconds)
 
     async def run_once(self) -> bool:
+        if self._auxiliary_runner is not None and await self._auxiliary_runner.run_once():
+            return True
         now = self._clock()
         work = await self._states.claim_next(self._worker_id, now)
         if work is None:
@@ -222,6 +230,7 @@ def build_default_supervisor(
     worker_id: str,
     states: WorkerStateStore,
     leases: ProfileLeaseGateway,
+    auxiliary_runner: AuxiliaryRunner | None = None,
     poll_interval_seconds: float,
     heartbeat_interval_seconds: float,
     terminate_grace_seconds: float,
@@ -231,6 +240,7 @@ def build_default_supervisor(
         worker_id=worker_id,
         states=states,
         leases=leases,
+        auxiliary_runner=auxiliary_runner,
         poll_interval_seconds=poll_interval_seconds,
         heartbeat_interval_seconds=heartbeat_interval_seconds,
         terminate_grace_seconds=terminate_grace_seconds,

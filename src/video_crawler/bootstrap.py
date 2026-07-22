@@ -52,6 +52,7 @@ from video_crawler.infrastructure.database.repositories.jobs import (
     SqlAlchemyWorkerStateStore,
 )
 from video_crawler.infrastructure.database.repositories.profile_verifications import (
+    ClaimedProfileVerification,
     ProfileVerificationRecord,
     ProfileVerificationRepository,
 )
@@ -59,6 +60,7 @@ from video_crawler.infrastructure.database.repositories.results import ResultRep
 from video_crawler.infrastructure.database.session import DatabaseSessionFactory
 from video_crawler.infrastructure.http.client import HttpxGateway, RetryPolicy
 from video_crawler.infrastructure.storage.minio import MinioRawArtifactStore
+from video_crawler.worker.profile_verification import ProfileVerificationRunner
 from video_crawler.worker.supervisor import WorkerSupervisor, build_default_supervisor
 
 
@@ -412,10 +414,25 @@ class ApplicationContainer:
         application.state.health_service = self.health_service
 
     def create_supervisor(self) -> WorkerSupervisor:
+        verification_runner = ProfileVerificationRunner(
+            worker_id=self.settings.worker_id,
+            states=self.profile_verifications,
+            poll_interval_seconds=self.settings.worker_poll_interval_seconds,
+            heartbeat_interval_seconds=self.settings.worker_heartbeat_interval_seconds,
+            stale_after_seconds=self.settings.worker_stale_after_seconds,
+            timeout_seconds=(
+                2 * self.settings.default_page_timeout_seconds
+                + self.settings.task_terminate_grace_seconds
+                + self.settings.task_kill_timeout_seconds
+            ),
+            terminate_grace_seconds=self.settings.task_terminate_grace_seconds,
+            kill_timeout_seconds=self.settings.task_kill_timeout_seconds,
+        )
         return build_default_supervisor(
             worker_id=self.settings.worker_id,
             states=self.worker_states,
             leases=self.leases,
+            auxiliary_runner=verification_runner,
             poll_interval_seconds=self.settings.worker_poll_interval_seconds,
             heartbeat_interval_seconds=self.settings.worker_heartbeat_interval_seconds,
             terminate_grace_seconds=self.settings.task_terminate_grace_seconds,
@@ -557,14 +574,39 @@ class ApplicationContainer:
             await browser.close()
             await http.aclose()
 
-    async def verify_profile(self, profile: AuthProfileResponse) -> bool:
-        adapter = self.adapter_registry.get(profile.platform)
+    async def execute_profile_verification(self, verification_id: UUID) -> None:
+        execution = await self.profile_verifications.load_execution(verification_id)
+        if execution is None:
+            raise RuntimeError("Profile verification request was not claimable")
+        try:
+            is_valid = await self._verify_profile_execution(execution)
+        except Exception:
+            await self.profile_verifications.mark_failed(
+                verification_id,
+                "PROFILE_VERIFICATION_FAILED",
+                "Profile verification failed",
+                datetime.now(UTC),
+            )
+            raise
+        completed = await self.profile_verifications.mark_succeeded(
+            verification_id,
+            is_valid=is_valid,
+            now=datetime.now(UTC),
+        )
+        if not completed:
+            raise RuntimeError("Profile verification request could not be completed")
+
+    async def _verify_profile_execution(
+        self,
+        execution: ClaimedProfileVerification,
+    ) -> bool:
+        adapter = self.adapter_registry.get(execution.platform)
         browser = Crawl4AIBrowserGateway(
             profile_root=self.settings.browser_profile_root,
-            profile_directory=profile.profile_directory,
+            profile_directory=execution.profile_directory,
         )
         http = HttpxGateway()
-        logger = structlog.get_logger().bind(profile_id=str(profile.profile_id))
+        logger = structlog.get_logger().bind(profile_id=str(execution.profile_id))
         context = AdapterContext(
             browser=browser,
             http=http,
@@ -574,9 +616,9 @@ class ApplicationContainer:
             cancellation=_CancellationToken(),
             logger=logger,
             auth_profile=_AuthContext(
-                profile_id=str(profile.profile_id),
-                platform=profile.platform,
-                profile_directory=profile.profile_directory,
+                profile_id=str(execution.profile_id),
+                platform=execution.platform,
+                profile_directory=execution.profile_directory,
             ),
         )
         try:

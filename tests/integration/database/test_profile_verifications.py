@@ -165,3 +165,25 @@ async def test_claim_reclaims_only_stale_running_request(
     assert stale is not None
     assert stale.verification_id == request.verification_id
     assert stale.worker_id == "worker-new"
+
+
+@pytest.mark.asyncio
+async def test_load_execution_returns_only_running_request_context(
+    database: DatabaseSessionFactory,
+) -> None:
+    profile_id = await _insert_profile(database)
+    repository = ProfileVerificationRepository(database)
+    now = datetime.now(UTC)
+    request = await repository.request(profile_id, now)
+    assert request is not None
+    assert await repository.load_execution(request.verification_id) is None
+    claimed = await repository.claim_next(
+        "worker-1",
+        now,
+        stale_before=now - timedelta(seconds=30),
+    )
+    assert claimed is not None
+
+    execution = await repository.load_execution(request.verification_id)
+
+    assert execution == claimed
