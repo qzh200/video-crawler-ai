@@ -24,7 +24,7 @@ Crawl4AI 0.9.2 emits captured response entries as flat mappings whose `body` is 
 
 `_CrawlResultPage.captured_responses` will normalize direct byte bodies, direct text bodies, and nested text bodies into `CapturedResponse.body: bytes`. It will ignore request events and capture-error events instead of converting them into zero-status responses. This normalization remains platform-neutral and belongs only in the Crawl4AI infrastructure gateway.
 
-Crawl4AI 0.9.2 and its current upstream `main` also attempt to call `response.text()` for binary image responses and reference `text_body` after that call fails. The project will not patch site-packages or vendor Crawl4AI internals. The browser will run with `BrowserConfig(text_mode=True)`, which blocks images and other rich content that are outside this project's collection scope while preserving page HTML, JavaScript, and API responses. This removes the known image-capture warning at its source and reduces unnecessary browser traffic.
+Crawl4AI 0.9.2 and its current upstream `main` also attempt to call `response.text()` for binary image responses and reference `text_body` after that call fails. The project will not patch site-packages or vendor Crawl4AI internals. Worker/API browser instances will run with `BrowserConfig(text_mode=True)`, which blocks images and other rich content that are outside this project's collection scope while preserving page HTML, JavaScript, and API responses. The interactive Profile login command explicitly uses `text_mode=False` so QR codes and other login media remain available. This removes the known image-capture warning from crawl/verification traffic without breaking manual login.
 
 ## Profile State Enforcement
 
@@ -34,7 +34,7 @@ Crawl4AI 0.9.2 and its current upstream `main` also attempt to call `response.te
 - an `expired` or `disabled` Profile raises `PROFILE_NOT_ACTIVE`;
 - only an `active` Profile may produce a pending job.
 
-The SQL job-claim query will independently require the joined Profile status to be `active`. This second boundary covers a Profile that becomes inactive after job creation but before Worker claim. Such a pending job remains paused and becomes claimable after the operator logs in and successfully verifies the same Profile. The Worker will not automatically authenticate or change Profile state.
+The SQL job-claim path will independently require Profile status to be `active`. It first reads bounded active candidate Job IDs without a lock, then applies `FOR UPDATE SKIP LOCKED` to one exact Job primary key and rechecks Profile status before transition. This avoids locking a shared Profile row, preserves concurrent Job claiming, and prevents active jobs from starving behind inactive pending jobs. This second boundary covers a Profile that becomes inactive after job creation but before Worker claim. Such a pending job remains paused and becomes claimable after the operator logs in and successfully verifies the same Profile. The Worker will not automatically authenticate or change Profile state.
 
 The two checks are intentional defense in depth: the API provides immediate feedback for new jobs, while the claim filter protects already-persisted jobs and state races.
 

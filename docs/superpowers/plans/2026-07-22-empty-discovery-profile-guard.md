@@ -74,7 +74,7 @@ docs/operations.md
 - Consumes: Crawl4AI 0.9.2 flat network event mappings.
 - Produces: `_CrawlResultPage.captured_responses -> tuple[CapturedResponse, ...]` with byte bodies.
 - Preserves: the platform-neutral `BrowserGateway` and `NetworkCaptureGateway` contracts.
-- Configures: `BrowserConfig(text_mode=True)` through `_browser_config()`.
+- Configures: `BrowserConfig(text_mode=True)` through `_browser_config()` for Worker/API crawling; `run_login` passes `text_mode=False` for interactive media.
 
 - [ ] **Step 1: Add failing response-normalization tests**
 
@@ -509,24 +509,44 @@ uv run pytest tests/integration/database/test_job_repository.py::test_claim_next
 
 Expected: FAIL because the second claim currently returns the expired Profile's job.
 
-- [ ] **Step 3: Add the active-Profile join to the claim query**
+- [ ] **Step 3: Add active candidates with exact-primary-key locking**
 
-In `JobRepository._claim`, change the query construction to:
+In `JobRepository._claim`, first select a bounded list of active candidate Job IDs without a lock. Then iterate those IDs and lock one exact primary key. Recheck Profile state after acquiring the Job lock:
 
 ```python
-query = (
-    select(CrawlJob)
-    .join(AuthProfile, CrawlJob.auth_profile_id == AuthProfile.id)
-    .where(
-        CrawlJob.status == "pending",
-        AuthProfile.status == "active",
-        (CrawlJob.next_retry_at.is_(None) | (CrawlJob.next_retry_at <= now)),
-    )
-    .order_by(CrawlJob.id.asc())
-    .with_for_update(skip_locked=True)
-    .limit(1)
+candidate_ids = tuple(
+    (
+        await session.scalars(
+            select(CrawlJob.id)
+            .join(AuthProfile, CrawlJob.auth_profile_id == AuthProfile.id)
+            .where(
+                CrawlJob.status == "pending",
+                AuthProfile.status == "active",
+                (CrawlJob.next_retry_at.is_(None) | (CrawlJob.next_retry_at <= now)),
+            )
+            .order_by(CrawlJob.id.asc())
+            .limit(100)
+        )
+    ).all()
 )
+
+for candidate_id in candidate_ids:
+    job = await session.scalar(
+        select(CrawlJob)
+        .where(CrawlJob.id == candidate_id, CrawlJob.status == "pending")
+        .with_for_update(skip_locked=True)
+    )
+    if job is None:
+        continue
+    profile_status = await session.scalar(
+        select(AuthProfile.status).where(AuthProfile.id == job.auth_profile_id)
+    )
+    if profile_status != "active":
+        continue
+    # transition and return the claimed Job
 ```
+
+Do not place the Profile join inside the `FOR UPDATE` query: MySQL would lock the shared Profile row and defeat concurrent `SKIP LOCKED` claims. Add a regression with more than 100 inactive jobs before an active job so the bounded candidate list cannot starve active work.
 
 - [ ] **Step 4: Run repository tests and verify GREEN**
 
