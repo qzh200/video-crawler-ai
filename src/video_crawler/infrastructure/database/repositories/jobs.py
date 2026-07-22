@@ -58,36 +58,53 @@ class JobRepository:
     async def _claim(
         self, session: AsyncSession, worker_id: str, now: datetime
     ) -> ClaimedJob | None:
-        query = (
-            select(CrawlJob)
-            .where(
-                CrawlJob.status == "pending",
-                (CrawlJob.next_retry_at.is_(None) | (CrawlJob.next_retry_at <= now)),
+        candidate_ids = tuple(
+            (
+                await session.scalars(
+                    select(CrawlJob.id)
+                    .where(
+                        CrawlJob.status == "pending",
+                        (CrawlJob.next_retry_at.is_(None) | (CrawlJob.next_retry_at <= now)),
+                    )
+                    .order_by(CrawlJob.id.asc())
+                    .limit(100)
+                )
+            ).all()
+        )
+        for candidate_id in candidate_ids:
+            query = (
+                select(CrawlJob)
+                .where(
+                    CrawlJob.id == candidate_id,
+                    CrawlJob.status == "pending",
+                    (CrawlJob.next_retry_at.is_(None) | (CrawlJob.next_retry_at <= now)),
+                )
+                .with_for_update(skip_locked=True)
             )
-            # Ordering by the primary key avoids InnoDB next-key locks on the
-            # non-unique claim index when multiple workers claim simultaneously.
-            .order_by(CrawlJob.id.asc())
-            .with_for_update(skip_locked=True)
-            .limit(1)
-        )
-        job = (await session.execute(query)).scalar_one_or_none()
-        if job is None:
-            return None
-        job.status = "running"
-        job.locked_by = worker_id
-        job.locked_at = now
-        job.heartbeat_at = now
-        job.attempt_count += 1
-        return ClaimedJob(
-            id=job.id,
-            root_job_id=job.root_job_id,
-            parent_job_id=job.parent_job_id,
-            auth_profile_id=job.auth_profile_id,
-            source_url=job.source_url,
-            job_type=job.job_type,
-            effective_strategy=dict(job.effective_strategy),
-            attempt_count=job.attempt_count,
-        )
+            job = (await session.execute(query)).scalar_one_or_none()
+            if job is None:
+                continue
+            profile_status = await session.scalar(
+                select(AuthProfile.status).where(AuthProfile.id == job.auth_profile_id)
+            )
+            if profile_status != "active":
+                continue
+            job.status = "running"
+            job.locked_by = worker_id
+            job.locked_at = now
+            job.heartbeat_at = now
+            job.attempt_count += 1
+            return ClaimedJob(
+                id=job.id,
+                root_job_id=job.root_job_id,
+                parent_job_id=job.parent_job_id,
+                auth_profile_id=job.auth_profile_id,
+                source_url=job.source_url,
+                job_type=job.job_type,
+                effective_strategy=dict(job.effective_strategy),
+                attempt_count=job.attempt_count,
+            )
+        return None
 
 
 def _db_time(value: datetime) -> datetime:
