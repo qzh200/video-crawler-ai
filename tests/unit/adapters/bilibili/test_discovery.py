@@ -8,7 +8,8 @@ import pytest
 
 from video_crawler.adapters.base import AdapterContext
 from video_crawler.adapters.bilibili import BilibiliAdapter
-from video_crawler.application.gateways import CapturedResponse
+from video_crawler.application.gateways import CapturedResponse, HttpResponse
+from video_crawler.domain.errors import DiscoveryEmptyError
 from video_crawler.domain.strategy import CrawlStrategy
 from video_crawler.domain.targets import TargetKind
 
@@ -18,18 +19,28 @@ FIXTURE = Path(__file__).parents[3] / "fixtures" / "bilibili" / "popular_page.js
 
 
 class FakePage:
-    def __init__(self, *, url: str, evaluated: object = None) -> None:
+    def __init__(
+        self,
+        *,
+        url: str,
+        evaluated: object = None,
+        wait_error: Exception | None = None,
+    ) -> None:
         self.url = url
         self.html = ""
         self.evaluated = evaluated
+        self.wait_error = wait_error
         self.closed = False
+        self.waits: list[tuple[str, float]] = []
 
     async def evaluate(self, script: str, *args: object) -> object:
         del script, args
         return self.evaluated
 
     async def wait_for_selector(self, selector: str, *, timeout_seconds: float) -> None:
-        del selector, timeout_seconds
+        self.waits.append((selector, timeout_seconds))
+        if self.wait_error is not None:
+            raise self.wait_error
 
     async def close(self) -> None:
         self.closed = True
@@ -60,6 +71,35 @@ class FakeNetworkCapture:
         return self.responses
 
 
+class FakeHttp:
+    def __init__(self, response: HttpResponse | None = None) -> None:
+        self.response = response
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+    async def request(self, method: str, url: str, **kwargs: object) -> HttpResponse:
+        self.calls.append((method, url, kwargs))
+        if self.response is None:
+            raise AssertionError("HTTP fallback was not expected")
+        return self.response
+
+
+class RecordingArtifacts:
+    def __init__(self) -> None:
+        self.items: list[tuple[bytes, dict[str, object]]] = []
+
+    async def store(self, content: bytes, **kwargs: object) -> object:
+        self.items.append((content, kwargs))
+        return SimpleNamespace(id=1)
+
+
+class RecordingLogger:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    def warning(self, event: str, **values: object) -> None:
+        self.events.append((event, values))
+
+
 class RecordingCancellation:
     def __init__(self) -> None:
         self.checks = 0
@@ -71,18 +111,30 @@ class RecordingCancellation:
 def make_context(
     page: FakePage,
     *responses: CapturedResponse,
-) -> tuple[AdapterContext, FakeBrowser, RecordingCancellation]:
+    http: FakeHttp | None = None,
+) -> tuple[
+    AdapterContext,
+    FakeBrowser,
+    RecordingCancellation,
+    RecordingArtifacts,
+    RecordingLogger,
+]:
     browser = FakeBrowser(page)
     cancellation = RecordingCancellation()
+    artifacts = RecordingArtifacts()
+    logger = RecordingLogger()
     context = cast(
         AdapterContext,
         SimpleNamespace(
             browser=browser,
             network_capture=FakeNetworkCapture(*responses),
+            http=http or FakeHttp(),
+            raw_artifacts=artifacts,
+            logger=logger,
             cancellation=cancellation,
         ),
     )
-    return context, browser, cancellation
+    return context, browser, cancellation, artifacts, logger
 
 
 def captured_json(
@@ -136,7 +188,7 @@ async def test_auth_uses_captured_navigation_json(is_login: bool, expected: bool
         else b'{"code":0,"data":{"isLogin":false}}'
     )
     page = FakePage(url="https://www.bilibili.com/")
-    context, browser, _ = make_context(
+    context, browser, _, _, _ = make_context(
         page,
         captured_json("/x/web-interface/nav", body),
     )
@@ -156,7 +208,7 @@ async def test_auth_falls_back_to_explicit_dom_markers() -> None:
         url="https://www.bilibili.com/",
         evaluated={"hasAvatar": True, "hasLoginEntry": False},
     )
-    context, _, _ = make_context(page)
+    context, _, _, _, _ = make_context(page)
 
     result = await BilibiliAdapter().verify_auth(context)
 
@@ -171,7 +223,7 @@ async def test_auth_ignores_navigation_json_from_lookalike_domain() -> None:
         url="https://www.bilibili.com/",
         evaluated={"hasAvatar": False, "hasLoginEntry": True},
     )
-    context, _, _ = make_context(
+    context, _, _, _, _ = make_context(
         page,
         captured_json(
             "/x/web-interface/nav",
@@ -189,7 +241,7 @@ async def test_auth_ignores_navigation_json_from_lookalike_domain() -> None:
 @pytest.mark.asyncio
 async def test_discovery_preserves_order_removes_duplicates_and_enforces_limit() -> None:
     page = FakePage(url=POPULAR_URL)
-    context, browser, cancellation = make_context(
+    context, browser, cancellation, _, _ = make_context(
         page,
         captured_json("/x/web-interface/popular?pn=1&ps=20", FIXTURE.read_bytes()),
     )
@@ -231,7 +283,7 @@ async def test_discovery_falls_back_to_dom_links() -> None:
             "https://www.bilibili.com/video/BV1FAKE00002?from=fixture",
         ],
     )
-    context, _, _ = make_context(page)
+    context, _, _, _, _ = make_context(page)
     adapter = BilibiliAdapter()
     target = await adapter.resolve_target(context, POPULAR_URL)
 
@@ -254,7 +306,7 @@ async def test_discovery_falls_back_to_dom_links() -> None:
 @pytest.mark.asyncio
 async def test_discovery_ignores_popular_json_from_lookalike_domain() -> None:
     page = FakePage(url=POPULAR_URL, evaluated=["/video/BV1FAKE00003"])
-    context, _, _ = make_context(
+    context, _, _, _, _ = make_context(
         page,
         captured_json(
             "/x/web-interface/popular",
@@ -275,3 +327,101 @@ async def test_discovery_ignores_popular_json_from_lookalike_domain() -> None:
     ]
 
     assert [item.platform_video_id for item in discovered] == ["BV1FAKE00003"]
+
+
+@pytest.mark.asyncio
+async def test_discovery_uses_public_http_fallback_and_archives_response() -> None:
+    page = FakePage(url=POPULAR_URL, evaluated=[])
+    http = FakeHttp(
+        HttpResponse(
+            url="https://api.bilibili.com/x/web-interface/popular?pn=1&ps=2",
+            status_code=200,
+            headers={"content-type": "application/json"},
+            body=FIXTURE.read_bytes(),
+        )
+    )
+    context, _, _, artifacts, _ = make_context(page, http=http)
+    target = await BilibiliAdapter().resolve_target(context, POPULAR_URL)
+
+    discovered = [
+        item
+        async for item in BilibiliAdapter().discover_targets(
+            context, target, CrawlStrategy(video_limit=2)
+        )
+    ]
+
+    assert [item.platform_video_id for item in discovered] == [
+        "BV1FAKE00001",
+        "BV1FAKE00002",
+    ]
+    assert http.calls[0][0:2] == (
+        "GET",
+        "https://api.bilibili.com/x/web-interface/popular",
+    )
+    assert http.calls[0][2]["params"] == {"pn": 1, "ps": 2}
+    assert artifacts.items[0][1]["artifact_type"] == "popular_discovery"
+    assert artifacts.items[0][1]["content_type"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_discovery_uses_http_when_dom_wait_fails() -> None:
+    page = FakePage(
+        url=POPULAR_URL,
+        wait_error=RuntimeError("Wait condition failed: Timeout"),
+    )
+    http = FakeHttp(
+        HttpResponse(
+            url="https://api.bilibili.com/x/web-interface/popular?pn=1&ps=1",
+            status_code=200,
+            headers={"content-type": "application/json"},
+            body=FIXTURE.read_bytes(),
+        )
+    )
+    context, _, _, _, logger = make_context(page, http=http)
+    target = await BilibiliAdapter().resolve_target(context, POPULAR_URL)
+
+    discovered = [
+        item
+        async for item in BilibiliAdapter().discover_targets(
+            context, target, CrawlStrategy(video_limit=1)
+        )
+    ]
+
+    assert [item.platform_video_id for item in discovered] == ["BV1FAKE00001"]
+    assert logger.events == [("discovery_dom_wait_failed", {"error_type": "RuntimeError"})]
+    assert page.closed
+
+
+@pytest.mark.asyncio
+async def test_discovery_raises_coded_error_when_all_sources_are_empty() -> None:
+    page = FakePage(url=POPULAR_URL, evaluated=[])
+    secret = f"fixture-cookie-{id(page)}"
+    http = FakeHttp(
+        HttpResponse(
+            url="https://api.bilibili.com/x/web-interface/popular?pn=1&ps=3",
+            status_code=200,
+            headers={"set-cookie": secret},
+            body=b'{"code":0,"data":{"list":[]}}',
+        )
+    )
+    context, _, _, _, logger = make_context(page, http=http)
+    target = await BilibiliAdapter().resolve_target(context, POPULAR_URL)
+
+    with pytest.raises(DiscoveryEmptyError) as raised:
+        _ = [
+            item
+            async for item in BilibiliAdapter().discover_targets(
+                context, target, CrawlStrategy(video_limit=3)
+            )
+        ]
+
+    assert raised.value.code == "DISCOVERY_EMPTY"
+    assert raised.value.details == {
+        "captured_responses": 0,
+        "captured_candidates": 0,
+        "dom_candidates": 0,
+        "http_candidates": 0,
+    }
+    assert secret not in str(raised.value)
+    assert secret not in repr(logger.events)
+    assert page.waits == [('a[href*="/video/BV"]', 10.0)]

@@ -1,3 +1,6 @@
+from collections.abc import Mapping
+
+
 class DomainError(Exception):
     """Base class for expected domain failures."""
 
@@ -16,6 +19,15 @@ class AdapterNotFoundError(DomainError):
 
 class UpstreamError(DomainError):
     """Raised when an upstream platform operation fails."""
+
+
+class DiscoveryEmptyError(UpstreamError):
+    code = "DISCOVERY_EMPTY"
+    public_message = "list discovery returned no valid targets"
+
+    def __init__(self, details: Mapping[str, int]) -> None:
+        self.details = {key: int(value) for key, value in details.items()}
+        super().__init__(self.public_message)
 
 
 class CancellationRequestedError(DomainError):

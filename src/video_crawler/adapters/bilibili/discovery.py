@@ -11,12 +11,16 @@ from video_crawler.adapters.bilibili.resolver import (
     PLATFORM_KEY,
     canonical_video_url,
 )
-from video_crawler.application.gateways import BrowserPage
+from video_crawler.application.gateways import CapturedResponse
+from video_crawler.domain.errors import DiscoveryEmptyError
 from video_crawler.domain.strategy import CrawlStrategy
 from video_crawler.domain.targets import DiscoveredTarget, ResolvedTarget, TargetKind
 
 _POPULAR_API_PATH = "/x/web-interface/popular"
+_POPULAR_API_URL = "https://api.bilibili.com/x/web-interface/popular"
 _API_HOST = "api.bilibili.com"
+_POPULAR_LINK_SELECTOR = 'a[href*="/video/BV"]'
+_DOM_WAIT_SECONDS = 10.0
 _DOM_LINK_SCRIPT = """() => Array.from(
   document.querySelectorAll('a[href*="/video/BV"]'),
   element => element.href
@@ -37,9 +41,37 @@ async def discover_popular_targets(
         capture_network=True,
     )
     try:
-        candidates = _captured_candidates(context, page)
-        if candidates is None:
-            candidates = _dom_candidates(await page.evaluate(_DOM_LINK_SCRIPT))
+        responses = context.network_capture.responses_for(page)
+        captured = _captured_candidates_from(responses)
+        candidates = captured
+        dom: list[str] = []
+        http: list[str] = []
+        if not candidates:
+            try:
+                await page.wait_for_selector(
+                    _POPULAR_LINK_SELECTOR,
+                    timeout_seconds=min(_DOM_WAIT_SECONDS, strategy.page_timeout_seconds),
+                )
+            except Exception as error:
+                context.logger.warning(
+                    "discovery_dom_wait_failed",
+                    error_type=type(error).__name__,
+                )
+            else:
+                dom = _dom_candidates(await page.evaluate(_DOM_LINK_SCRIPT))
+                candidates = dom
+        if not candidates:
+            http, _ = await _http_candidates(context, strategy)
+            candidates = http
+        if not candidates:
+            details = {
+                "captured_responses": len(responses),
+                "captured_candidates": len(captured),
+                "dom_candidates": len(dom),
+                "http_candidates": len(http),
+            }
+            context.logger.warning("discovery_empty", **details)
+            raise DiscoveryEmptyError(details)
         seen: set[str] = set()
         position = 0
         for bvid in candidates:
@@ -61,8 +93,8 @@ async def discover_popular_targets(
         await page.close()
 
 
-def _captured_candidates(context: AdapterContext, page: BrowserPage) -> list[str] | None:
-    for response in context.network_capture.responses_for(page):
+def _captured_candidates_from(responses: Sequence[CapturedResponse]) -> list[str]:
+    for response in responses:
         parsed_url = urlsplit(response.url)
         if (
             response.status_code != 200
@@ -74,7 +106,28 @@ def _captured_candidates(context: AdapterContext, page: BrowserPage) -> list[str
         parsed = _parse_popular_response(response.body)
         if parsed is not None:
             return parsed
-    return None
+    return []
+
+
+async def _http_candidates(
+    context: AdapterContext,
+    strategy: CrawlStrategy,
+) -> tuple[list[str], int]:
+    response = await context.http.request(
+        "GET",
+        _POPULAR_API_URL,
+        params={"pn": 1, "ps": strategy.video_limit},
+        timeout_seconds=strategy.request_timeout_seconds,
+    )
+    await context.raw_artifacts.store(
+        response.body,
+        artifact_type="popular_discovery",
+        content_type=response.headers.get("content-type", "application/json").split(";", 1)[0],
+        metadata={"status_code": response.status_code},
+    )
+    if response.status_code != 200:
+        return [], response.status_code
+    return _parse_popular_response(response.body) or [], response.status_code
 
 
 def _parse_popular_response(body: bytes) -> list[str] | None:
