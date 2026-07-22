@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 from video_crawler.api.dependencies.auth import require_api_key
@@ -72,11 +73,24 @@ class UnusedProfileService:
         raise AssertionError(f"profile service method should not be called: {name}")
 
 
-def _client(store: InMemoryJobStore | None = None) -> tuple[TestClient, InMemoryJobStore]:
+class InMemoryProfileStates:
+    def __init__(self, states: dict[UUID, str] | None = None) -> None:
+        self.states = states if states is not None else {PROFILE_ID: "active"}
+
+    async def get_status(self, profile_id: UUID) -> str | None:
+        return self.states.get(profile_id)
+
+
+def _client(
+    store: InMemoryJobStore | None = None,
+    profile_states: InMemoryProfileStates | None = None,
+) -> tuple[TestClient, InMemoryJobStore]:
     job_store = store or InMemoryJobStore()
+    states = profile_states or InMemoryProfileStates()
     ids = iter((FIRST_JOB_ID, SECOND_JOB_ID, THIRD_JOB_ID))
     service = JobService(
         store=job_store,
+        profile_states=states,
         default_strategy=CrawlStrategy(),
         idempotency_ttl=timedelta(hours=24),
         clock=lambda: NOW,
@@ -94,6 +108,33 @@ def _valid_request() -> dict[str, object]:
         "video_limit": 100,
         "strategy": {"max_retries": 3},
     }
+
+
+@pytest.mark.parametrize(
+    ("states", "expected_status", "expected_code"),
+    [
+        ({}, 404, "PROFILE_NOT_FOUND"),
+        ({PROFILE_ID: "expired"}, 409, "PROFILE_NOT_ACTIVE"),
+        ({PROFILE_ID: "disabled"}, 409, "PROFILE_NOT_ACTIVE"),
+    ],
+)
+def test_create_requires_an_active_profile(
+    states: dict[UUID, str],
+    expected_status: int,
+    expected_code: str,
+) -> None:
+    client, store = _client(profile_states=InMemoryProfileStates(states))
+
+    response = client.post(
+        "/api/v1/crawl-jobs",
+        json=_valid_request(),
+        headers={"Idempotency-Key": "inactive-profile"},
+    )
+
+    assert response.status_code == expected_status
+    assert response.json()["error"]["code"] == expected_code
+    assert store.jobs == {}
+    assert store.idempotency == {}
 
 
 def test_create_rejects_video_limit_above_500_with_structured_error() -> None:

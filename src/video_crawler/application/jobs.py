@@ -64,6 +64,10 @@ class JobStore(Protocol):
     ) -> JobRecord: ...
 
 
+class ProfileStateReader(Protocol):
+    async def get_status(self, profile_id: UUID) -> str | None: ...
+
+
 class JobServiceError(Exception):
     code = "JOB_ERROR"
     message = "crawl job operation failed"
@@ -97,11 +101,24 @@ class JobNotResumableError(JobServiceError):
     status_code = 409
 
 
+class ProfileNotFoundError(JobServiceError):
+    code = "PROFILE_NOT_FOUND"
+    message = "authentication profile was not found"
+    status_code = 404
+
+
+class ProfileNotActiveError(JobServiceError):
+    code = "PROFILE_NOT_ACTIVE"
+    message = "authentication profile is not active"
+    status_code = 409
+
+
 class JobService:
     def __init__(
         self,
         *,
         store: JobStore,
+        profile_states: ProfileStateReader,
         default_strategy: CrawlStrategy,
         idempotency_ttl: timedelta,
         clock: Callable[[], datetime] | None = None,
@@ -110,6 +127,7 @@ class JobService:
         if idempotency_ttl <= timedelta(0):
             raise ValueError("idempotency TTL must be positive")
         self._store = store
+        self._profile_states = profile_states
         self._default_strategy = default_strategy
         self._idempotency_ttl = idempotency_ttl
         self._clock = clock or (lambda: datetime.now(UTC))
@@ -124,6 +142,11 @@ class JobService:
         strategy_overrides: Mapping[str, object],
         idempotency_key: str | None,
     ) -> JobCreateResult:
+        profile_status = await self._profile_states.get_status(auth_profile_id)
+        if profile_status is None:
+            raise ProfileNotFoundError
+        if profile_status != "active":
+            raise ProfileNotActiveError
         overrides = dict(strategy_overrides)
         if video_limit is not None:
             overrides["video_limit"] = video_limit

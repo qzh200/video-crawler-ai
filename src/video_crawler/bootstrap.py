@@ -291,6 +291,10 @@ class _AuthProfileOperations:
             return None
         return _profile_response(row[0], row[1].platform_key)
 
+    async def get_status(self, profile_id: UUID) -> str | None:
+        profile = await self.get(profile_id)
+        return None if profile is None else profile.status
+
     async def verify(self, profile_id: UUID) -> AuthProfileResponse | None:
         profile = await self.get(profile_id)
         if profile is None:
@@ -364,8 +368,10 @@ class ApplicationContainer:
         self.worker_states = SqlAlchemyWorkerStateStore(self.sessions)
         self.content = ContentRepository(self.sessions)
         self.results = ResultRepository(self.sessions)
+        self.profile_service = _AuthProfileOperations(self)
         self.job_service = JobService(
             store=self.job_store,
+            profile_states=self.profile_service,
             default_strategy=CrawlStrategy.from_defaults(self.settings),
             idempotency_ttl=timedelta(hours=self.settings.idempotency_ttl_hours),
         )
@@ -374,7 +380,6 @@ class ApplicationContainer:
             store=self.results,
             cursor_codec=CursorCodec(cursor_secret),
         )
-        self.profile_service = _AuthProfileOperations(self)
         self.leases = ProfileLeaseService(
             self.sessions,
             lease_ttl=timedelta(seconds=self.settings.worker_stale_after_seconds),
