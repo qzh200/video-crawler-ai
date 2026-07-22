@@ -92,7 +92,12 @@ async def test_browser_gateway_applies_profile_and_page_timeout(tmp_path: Path) 
     assert crawler.timeout_seconds == 12.5
     assert crawler.capture_network is False
     assert gateway.profile_path.name == "profile-1"
-    assert "profile-1" in repr(crawler.config)
+    assert crawler.config == {
+        "user_data_dir": str(tmp_path / "profile-1"),
+        "use_persistent_context": True,
+        "headless": True,
+        "text_mode": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -111,6 +116,7 @@ async def test_browser_gateway_can_start_visible_for_interactive_login(tmp_path:
         "user_data_dir": str(tmp_path / "profile-1"),
         "use_persistent_context": True,
         "headless": False,
+        "text_mode": True,
     }
 
 
@@ -176,3 +182,55 @@ async def test_crawl_result_page_reuses_session_for_interaction() -> None:
     assert crawler.configs[1].values["wait_for"] == "css:#ready"
     assert crawler.configs[1].values["wait_for_timeout"] == 4500
     assert crawler.killed_session == "session-1"
+
+
+def test_crawl_result_page_normalizes_nested_text_response_body() -> None:
+    result = SimpleNamespace(
+        network_requests=[
+            {
+                "event_type": "response",
+                "url": "https://api.example.test/state",
+                "status": 200,
+                "headers": {"content-type": "application/json"},
+                "body": {"text": '{"active":true}'},
+            }
+        ]
+    )
+    page = _CrawlResultPage(
+        crawler=FakeSessionCrawler(),
+        run_config_factory=FakeRunConfig,
+        result=result,
+        url="https://example.test/page",
+        session_id="session-1",
+    )
+
+    assert page.captured_responses == (
+        CapturedResponse(
+            url="https://api.example.test/state",
+            status_code=200,
+            headers={"content-type": "application/json"},
+            body=b'{"active":true}',
+        ),
+    )
+
+
+def test_crawl_result_page_ignores_non_response_network_events() -> None:
+    result = SimpleNamespace(
+        network_requests=[
+            {"event_type": "request", "url": "https://example.test/request"},
+            {
+                "event_type": "response_capture_error",
+                "url": "https://example.test/image.png",
+                "error": "binary body unavailable",
+            },
+        ]
+    )
+    page = _CrawlResultPage(
+        crawler=FakeSessionCrawler(),
+        run_config_factory=FakeRunConfig,
+        result=result,
+        url="https://example.test/page",
+        session_id="session-1",
+    )
+
+    assert page.captured_responses == ()

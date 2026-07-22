@@ -112,6 +112,7 @@ class Crawl4AIBrowserGateway:
             "user_data_dir": str(self.profile_path),
             "use_persistent_context": True,
             "headless": self._headless,
+            "text_mode": True,
         }
 
     @staticmethod
@@ -159,6 +160,18 @@ class Crawl4AIBrowserGateway:
         return DefaultCrawler()
 
 
+def _response_body_bytes(value: object) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode()
+    if isinstance(value, Mapping):
+        text = value.get("text")
+        if isinstance(text, str):
+            return text.encode()
+    return b""
+
+
 class _CrawlResultPage:
     def __init__(
         self,
@@ -191,16 +204,17 @@ class _CrawlResultPage:
             if not isinstance(entry, Mapping):
                 continue
             response = entry.get("response")
-            values = response if isinstance(response, Mapping) else entry
+            if isinstance(response, Mapping):
+                values = response
+            elif entry.get("event_type") == "response":
+                values = entry
+            else:
+                continue
             url = values.get("url") or entry.get("url")
             if not url:
                 continue
             headers = values.get("headers")
-            body = values.get("body", b"")
-            if isinstance(body, str):
-                body = body.encode()
-            if not isinstance(body, bytes):
-                body = b""
+            body = _response_body_bytes(values.get("body", b""))
             captured.append(
                 CapturedResponse(
                     url=str(url),
