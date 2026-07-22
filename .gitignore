@@ -41,3 +41,4 @@ secrets/
 *.gz
 
 uv.lock
+openapi.json
