@@ -1,85 +1,84 @@
-# 0.1.0 实际系统测试操作手册
+# Bilibili 热门页全流程实际测试文档
 
-本文档用于在 Windows PowerShell 中对 0.1.0 做一次真实、可留证的系统测试。测试使用操作者自己的 Bilibili 登录态，只访问正常可见数据，不绕过验证码、风控、付费墙或访问控制。
+本文档用于实际测试以下入口的完整采集链路：
 
-默认使用独立 Compose 项目 `video-crawler-manual-test`，避免复用其他环境的 MySQL、MinIO 和浏览器 Profile 数据卷。所有命令都在同一个 PowerShell 窗口中执行。
+```text
+https://www.bilibili.com/v/popular/all
+```
 
-## 1. 测试范围
+测试链路是：热门页父任务发现视频 → 为每个视频创建子任务 → 采集指标、评论、弹幕和字幕 → 写入 MySQL 与 MinIO → 通过 API 查询结构化结果。
 
-本手册验证：
+所有命令均在 Windows PowerShell 中执行。测试只能使用操作者自己的正常登录态，不得绕过验证码、风控、付费墙或访问控制，也不得保存或提交 Cookie、Profile 内容和真实响应。
 
-- Compose 配置、构建、迁移和健康检查；
-- 持久化 Chromium Profile 的手动登录、注册与验证；
-- 热门列表发现和子任务执行；
-- 指标、评论、弹幕和字幕的结构化结果；
-- MinIO 原始对象元数据；
-- 幂等创建、取消和手动续跑；
-- API Key 与日志脱敏；
-- 服务停止、数据保留和测试环境清理。
+## 1. 测试模式与通过标准
 
-实时站点行为可能受登录状态、地区、内容可见性和上游接口变化影响。遇到验证码、风控或拒绝访问时应停止测试并记录现象，不做规避。
+首次测试推荐先执行“小规模全链路”，确认每个模块都能工作后，再执行默认数据量验收。
 
-## 2. 建立隔离测试上下文
+| 模式 | `video_limit` | 一级评论上限 | 全部回复 | 用途 |
+| --- | ---: | ---: | --- | --- |
+| 小规模全链路 | 3 | 20 | 否 | 快速验证所有处理环节 |
+| 默认数据量验收 | 100 | 1000 | 是 | 按系统默认策略进行正式验收 |
 
-打开 PowerShell，执行：
+这里的“小规模”只减少视频数和评论数，不跳过任何模块；指标、评论、全部可访问弹幕和全部可访问字幕仍会执行。
+
+一次测试通过必须同时满足：
+
+1. 父任务终态为 `success`，且 `module_states.discovery` 为 `success`；
+2. 发现并创建的子任务数等于 `video_limit`；
+3. 每个子任务终态为 `success`；
+4. 每个子任务的 `metrics`、`comments`、`timed_text` 均为 `success`；
+5. 指标快照可以通过 API 查询，指标使用 `standard.*` 或 `bilibili.*` 命名空间；
+6. 评论、弹幕和字幕数据符合实际可访问情况，弹幕和字幕统一从 timed-text API 查询；
+7. MySQL 有结构化记录，MinIO 原始对象元数据为 `available`；
+8. 日志不包含 API Key、Cookie、Authorization 或 Profile 内容。
+
+`partial` 表示系统正确保留了成功模块的数据，但本次“完整采集验收”仍判定为未通过，需要按第 12 节排障。
+
+## 2. 建立隔离测试环境
+
+进入仓库并设置独立 Compose 项目名：
 
 ```powershell
 Set-Location 'C:\Users\Administrator\Documents\video-crawler-ai'
-$env:COMPOSE_PROJECT_NAME = 'video-crawler-manual-test'
+$env:COMPOSE_PROJECT_NAME = 'video-crawler-popular-e2e'
 
 docker version
 docker compose version
+git rev-parse HEAD
 git status --short
 ```
 
-成功信号：Docker 客户端和服务端均可访问，Compose 为 v2，仓库状态符合预期。
-
-确认 API 和 MinIO Console 端口没有被其他程序占用：
+检查本机端口未被占用：
 
 ```powershell
-Get-NetTCPConnection -State Listen -LocalPort 8000,9001 -ErrorAction SilentlyContinue
-```
+$requiredPorts = 8000, 3306, 9000, 9001
+$busyPorts = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+    Where-Object { $_.LocalPort -in $requiredPorts } |
+    Select-Object -ExpandProperty LocalPort -Unique
 
-无输出表示端口空闲。如果有输出，先停止占用端口的既有测试服务；不要为了本测试删除未知数据卷。
-
-## 3. 初始化测试配置
-
-仅在 `.env` 不存在时复制示例：
-
-```powershell
-if (-not (Test-Path .env)) {
-    Copy-Item .env.example .env
+if ($busyPorts) {
+    throw "Ports already in use: $($busyPorts -join ', ')"
 }
-notepad .env
 ```
 
-如果已有 `.env` 属于其他运行环境，不要直接改写；请改用独立 checkout，或先由环境负责人确认可复用。Compose 服务固定读取仓库根目录的 `.env`。
+如果已有其他项目占用这些端口，请先停止对方或修改本测试项目的端口映射，不要复用其数据卷。
 
-至少把以下四项改成新的测试值，不要继续使用 `change-me`：
+## 3. 配置并启动基础服务
 
-```text
-API_KEY=<new-test-api-key>
-MYSQL_PASSWORD=<new-test-mysql-password>
-MYSQL_ROOT_PASSWORD=<new-test-root-password>
-MINIO_SECRET_KEY=<new-test-minio-password>
+仅当 `.env` 不存在时复制示例：
+
+```powershell
+if (-not (Test-Path '.env')) {
+    Copy-Item '.env.example' '.env'
+}
 ```
 
-注意：MySQL 和 MinIO 首次初始化后，单纯修改 `.env` 不会修改已有数据卷内的凭据。如果出现 MySQL `1045 Access denied`，先确认当前 `COMPOSE_PROJECT_NAME` 是否正确；不要对未知或需保留的数据卷执行 `down -v`。
-
-验证 Compose 插值：
+编辑 `.env`，至少确认 MySQL、MinIO、`API_KEY`、Profile 根目录与 Compose 配置有效。不要把真实密钥粘贴到本文档或提交到 Git。
 
 ```powershell
 docker compose config --quiet
 if ($LASTEXITCODE -ne 0) { throw 'Compose configuration is invalid' }
-```
 
-成功信号：退出码为 0，且没有“变量未设置”警告。
-
-## 4. 构建并启动基础服务
-
-首次构建会下载 Python 依赖和 Chromium，可能耗时较长：
-
-```powershell
 docker compose build
 if ($LASTEXITCODE -ne 0) { throw 'Image build failed' }
 
@@ -87,63 +86,61 @@ docker compose up -d mysql minio minio-init migrate api
 docker compose ps -a
 ```
 
-等待 readiness：
+等待 API 就绪：
 
 ```powershell
 $ready = $false
 for ($attempt = 1; $attempt -le 60; $attempt++) {
     try {
-        $response = Invoke-WebRequest http://localhost:8000/health/ready -UseBasicParsing -TimeoutSec 5
-        if ($response.StatusCode -eq 200) {
+        $health = Invoke-RestMethod -Uri 'http://localhost:8000/health/ready'
+        if ($health.status -eq 'ready') {
             $ready = $true
+            $health | ConvertTo-Json -Depth 10
             break
         }
-    } catch {
+    }
+    catch {
         Start-Sleep -Seconds 2
     }
 }
+
 if (-not $ready) {
     docker compose ps -a
     docker compose logs --tail 200 migrate api mysql minio minio-init
-    throw 'Readiness did not become healthy'
+    throw 'API readiness did not become ready'
 }
 ```
 
-成功信号：
+成功信号：`migrate` 正常退出，MySQL、MinIO 和 API 健康，readiness 返回 `status=ready`。
 
-- `mysql` 和 `minio` 为 healthy；
-- `migrate` 和 `minio-init` 退出码为 0；
-- `api` 持续运行；
-- `/health/ready` 返回 HTTP 200。
+## 4. 准备 Bilibili 登录 Profile
 
-## 5. 登录浏览器 Profile
+首次测试需要手动登录。Worker 此时不要启动。
 
-Worker 暂时不要启动。先启动本机 X Server，并允许 Docker Desktop 通过 `host.docker.internal` 连接。然后执行：
+先启动本机 X Server，并允许 Docker Desktop 通过 `host.docker.internal` 连接，然后执行：
 
 ```powershell
 docker compose run --rm -e DISPLAY=host.docker.internal:0 profile-login login --platform bilibili --profile bilibili-main
 ```
 
-浏览器打开后，由操作者手动完成正常登录，确认网页处于已登录状态，再回到终端按 Enter。
+浏览器打开后，由操作者正常登录 Bilibili，确认网页显示已登录，再回到终端按 Enter。Profile 会保存在 `browser_profiles` 数据卷中。
 
-成功信号：命令退出码为 0，`browser_profiles` 数据卷保留 Profile。不要在 Worker 正使用该 Profile 时重复运行登录命令。
+如果容器显示方案不可用，按 [operations.md](operations.md) 的“本机交互登录”步骤操作。不要通过 API 上传 Cookie，也不要在 Worker 使用该 Profile 时再次登录。
 
-如果容器显示方案不可用，可按 `docs/operations.md` 的“本机交互登录”步骤操作；不得通过 API 上传 Cookie。
+## 5. 注册并验证 Profile
 
-## 6. 注册并验证 Profile
-
-安全地输入 `.env` 中自己设置的 API Key：
+安全输入 `.env` 中配置的 API Key：
 
 ```powershell
-$secureApiKey = Read-Host 'Enter API_KEY from .env' -AsSecureString
+$secureApiKey = Read-Host 'API key' -AsSecureString
 $apiKey = [System.Net.NetworkCredential]::new('', $secureApiKey).Password
 $headers = @{ 'X-API-Key' = $apiKey }
 ```
 
-先复用已注册的同名 Profile；不存在时再创建：
+复用已注册的同名 Profile；不存在时创建：
 
 ```powershell
-$profiles = @(Invoke-RestMethod -Method Get -Uri http://localhost:8000/api/v1/auth-profiles -Headers $headers)
+$profiles = @(Invoke-RestMethod -Method Get -Uri 'http://localhost:8000/api/v1/auth-profiles' -Headers $headers)
 $profile = $profiles |
     Where-Object { $_.platform -eq 'bilibili' -and $_.profile_directory -eq 'bilibili-main' } |
     Select-Object -First 1
@@ -154,21 +151,30 @@ if ($null -eq $profile) {
         profile_name = 'bilibili-main'
         profile_directory = 'bilibili-main'
     } | ConvertTo-Json
-    $profile = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/auth-profiles -Headers $headers -ContentType 'application/json' -Body $profileBody
+
+    $profile = Invoke-RestMethod `
+        -Method Post `
+        -Uri 'http://localhost:8000/api/v1/auth-profiles' `
+        -Headers $headers `
+        -ContentType 'application/json' `
+        -Body $profileBody
 }
 
 $profileId = $profile.profile_id
-$verifiedProfile = Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/auth-profiles/$profileId/verify" -Headers $headers
-$verifiedProfile | ConvertTo-Json -Depth 10
+$verifiedProfile = Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000/api/v1/auth-profiles/$profileId/verify" `
+    -Headers $headers
 
+$verifiedProfile | ConvertTo-Json -Depth 10
 if ($verifiedProfile.status -ne 'active') {
-    throw "Profile verification failed with status $($verifiedProfile.status)"
+    throw "Profile verification failed: $($verifiedProfile.status)"
 }
 ```
 
-成功信号：Profile 响应不包含 Cookie 或文件内容，`status` 为 `active`。
+成功信号：Profile 状态为 `active`，响应中没有 Cookie 或 Profile 文件内容。
 
-## 7. 启动单 Worker
+## 6. 启动唯一 Worker
 
 ```powershell
 docker compose up -d worker
@@ -176,75 +182,39 @@ docker compose ps worker
 docker compose logs --tail 100 worker
 ```
 
-成功信号：只有一个 `worker` 服务实例持续运行，没有启动错误。不要使用 `--scale worker=2`。
+成功信号：只有一个 `worker` 服务实例持续运行。禁止使用 `--scale worker=2`。
 
-## 8. 创建最小真实采集任务
+## 7. 定义测试辅助函数
 
-先定义轮询函数：
+定义任务轮询函数。父任务与子任务都使用该函数等待终态：
 
 ```powershell
 function Wait-CrawlJob {
     param(
         [Parameter(Mandatory)] [string] $JobId,
-        [int] $TimeoutSeconds = 900
+        [int] $TimeoutSeconds = 7200
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        $record = Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/v1/crawl-jobs/$JobId" -Headers $headers
-        Write-Host "$(Get-Date -Format s) job=$JobId status=$($record.status) modules=$($record.module_states | ConvertTo-Json -Compress)"
-        if ($record.status -in @('success','partial','failed','cancelled')) {
-            return $record
+        $job = Invoke-RestMethod `
+            -Method Get `
+            -Uri "http://localhost:8000/api/v1/crawl-jobs/$JobId" `
+            -Headers $headers
+
+        Write-Host "$(Get-Date -Format HH:mm:ss) job=$JobId status=$($job.status)"
+        if ($job.status -in @('success', 'partial', 'failed', 'cancelled')) {
+            return $job
         }
+
         Start-Sleep -Seconds 5
     } while ((Get-Date) -lt $deadline)
 
-    throw "Timed out waiting for job $JobId"
+    throw "Timed out waiting for crawl job $JobId"
 }
 ```
 
-使用 1 个视频、5 条一级评论的烟雾策略，避免第一次测试范围过大：
-
-```powershell
-$idempotencyKey = "manual-smoke-$(Get-Date -Format yyyyMMddHHmmss)"
-$jobBody = @{
-    source_url = 'https://www.bilibili.com/v/popular/all'
-    auth_profile_id = $profileId
-    video_limit = 1
-    strategy = @{
-        max_root_comments = 5
-        fetch_all_replies = $false
-        fetch_all_danmaku = $true
-        fetch_all_subtitles = $true
-        timed_text_batch_size = 1000
-        max_retries = 2
-        video_delay_min_seconds = 1.0
-        video_delay_max_seconds = 1.5
-        comment_page_delay_min_seconds = 0.8
-        comment_page_delay_max_seconds = 1.0
-        request_timeout_seconds = 30
-        page_timeout_seconds = 60
-    }
-} | ConvertTo-Json -Depth 10
-
-$createHeaders = $headers + @{ 'Idempotency-Key' = $idempotencyKey }
-$job = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/crawl-jobs -Headers $createHeaders -ContentType 'application/json' -Body $jobBody
-$jobId = $job.job_id
-$job | ConvertTo-Json -Depth 10
-```
-
-热门页任务是列表父任务。先等待父任务完成发现：
-
-```powershell
-$parentResult = Wait-CrawlJob -JobId $jobId
-$parentResult | ConvertTo-Json -Depth 10
-```
-
-成功信号：父任务通常为 `success`，并创建一个视频子任务。`partial` 或 `failed` 时先查看第 15 节。
-
-## 9. 定位并等待视频子任务
-
-0.1.0 的任务响应尚不直接暴露数据库 `video_id` 和子任务列表，因此实际测试需做只读 MySQL 查询。定义安全的只读 SQL 辅助函数；SQL 通过标准输入传给容器，数据库密码不回显到宿主命令行：
+当前 API 不直接返回热门页生成的子任务列表，也不返回数据库内部 `video_id` 和 `unit_id`。因此验收需要只读查询 MySQL：
 
 ```powershell
 function Invoke-CrawlerSql {
@@ -256,293 +226,378 @@ function Invoke-CrawlerSql {
 }
 ```
 
-查询父任务创建的直接子任务：
+密码由容器环境变量读取，不会写入宿主机命令历史。
+
+## 8. 创建热门页全流程任务
+
+### 8.1 首次推荐：3 个视频的小规模全链路
 
 ```powershell
-$childRows = @(Invoke-CrawlerSql @"
-SELECT BIN_TO_UUID(id), video_id, status
-FROM crawl_jobs
-WHERE parent_job_id = UUID_TO_BIN('$jobId')
-ORDER BY created_at ASC;
-"@)
+$videoLimit = 3
+$maxRootComments = 20
+$fetchAllReplies = $false
+```
 
-$childJobs = @($childRows | Where-Object { $_.Trim() } | ForEach-Object {
-    $columns = $_ -split "`t"
-    [pscustomobject]@{
-        JobId = $columns[0]
-        VideoId = [int64]$columns[1]
-        InitialStatus = $columns[2]
+### 8.2 正式验收：默认 100 个视频
+
+完成小规模全链路后，如需按系统默认数据量验收，改用：
+
+```powershell
+$videoLimit = 100
+$maxRootComments = 1000
+$fetchAllReplies = $true
+```
+
+默认 100 视频会由单 Worker 串行处理，且会抓取所有可访问回复、弹幕和字幕，可能运行数小时。不要同时创建第二个正式任务。
+
+### 8.3 提交任务
+
+```powershell
+$jobBody = @{
+    source_url = 'https://www.bilibili.com/v/popular/all'
+    auth_profile_id = $profileId
+    video_limit = $videoLimit
+    strategy = @{
+        max_root_comments = $maxRootComments
+        fetch_all_replies = $fetchAllReplies
+        fetch_all_danmaku = $true
+        fetch_all_subtitles = $true
+        timed_text_batch_size = 1000
+        max_retries = 3
+        video_delay_min_seconds = 1.0
+        video_delay_max_seconds = 3.0
+        comment_page_delay_min_seconds = 0.8
+        comment_page_delay_max_seconds = 1.5
+        request_timeout_seconds = 30
+        page_timeout_seconds = 60
     }
-})
+} | ConvertTo-Json -Depth 10
 
-if ($childJobs.Count -eq 0) { throw 'No child video jobs were discovered' }
-$childJobs | Format-Table
+$createHeaders = $headers + @{
+    'Idempotency-Key' = "popular-e2e-$(Get-Date -Format yyyyMMddHHmmss)"
+}
+
+$createdJob = Invoke-RestMethod `
+    -Method Post `
+    -Uri 'http://localhost:8000/api/v1/crawl-jobs' `
+    -Headers $createHeaders `
+    -ContentType 'application/json' `
+    -Body $jobBody
+
+$jobId = $createdJob.job_id
+$createdJob | ConvertTo-Json -Depth 10
 ```
 
-等待所有子任务进入终态，并选择一个有结构化结果的子任务：
+立即检查：
+
+- `source_url` 必须是 `https://www.bilibili.com/v/popular/all`；
+- `parent_job_id` 必须为 `null`；
+- `root_job_id` 必须等于 `job_id`；
+- `effective_strategy.video_limit` 必须等于 `$videoLimit`；
+- 初始状态通常为 `pending` 或已经进入 `running`。
+
+## 9. 验收父任务：热门页发现
 
 ```powershell
-$completedChildren = @($childJobs | ForEach-Object {
-    $childResult = Wait-CrawlJob -JobId $_.JobId -TimeoutSeconds 1800
-    [pscustomobject]@{
-        JobId = $_.JobId
-        VideoId = $_.VideoId
-        Status = $childResult.status
-        ModuleStates = $childResult.module_states
-    }
-})
+$parentResult = Wait-CrawlJob -JobId $jobId
+$parentResult | ConvertTo-Json -Depth 10
 
-$completedChildren | Format-List
-$selected = $completedChildren | Where-Object { $_.Status -in @('success','partial') } | Select-Object -First 1
-if ($null -eq $selected) { throw 'No child job produced queryable results' }
-$videoId = $selected.VideoId
-```
-
-成功信号：子任务为 `success`，或在个别模块上为 `partial`；模块状态能说明 `metrics`、`comments`、`timed_text` 各自结果。
-
-## 10. 验证指标和评论 API
-
-```powershell
-$latestMetrics = Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/v1/videos/$videoId/metrics/latest" -Headers $headers
-$metricPage = Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/v1/videos/$videoId/metrics?page_size=10" -Headers $headers
-$commentPage = Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/v1/videos/$videoId/comments?page_size=10&order=asc" -Headers $headers
-
-$latestMetrics | ConvertTo-Json -Depth 10
-$metricPage | ConvertTo-Json -Depth 10
-$commentPage | ConvertTo-Json -Depth 10
-```
-
-检查点：
-
-- 指标键只包含批准的 `standard.*` 和 Adapter 命名空间键；
-- 缺失指标使用 `unsupported`、`not_public` 或 `fetch_failed`，不能伪造为 0；
-- 评论包含平台评论 ID、文本、作者展示字段、点赞/回复数和父子关系字段；
-- 分页响应有 `next_cursor` 时，可带回下一请求，页面之间不应重复或遗漏。
-
-游标示例：
-
-```powershell
-if ($commentPage.next_cursor) {
-    $escapedCursor = [uri]::EscapeDataString($commentPage.next_cursor)
-    $nextComments = Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/v1/videos/$videoId/comments?page_size=10&order=asc&cursor=$escapedCursor" -Headers $headers
-    $nextComments | ConvertTo-Json -Depth 10
+if ($parentResult.status -ne 'success') {
+    throw "Popular-page parent job failed: $($parentResult.status)"
+}
+if ($parentResult.module_states.discovery -ne 'success') {
+    throw "Discovery module failed: $($parentResult.module_states.discovery)"
 }
 ```
 
-## 11. 验证弹幕和字幕 API
-
-先取得内容单元 ID：
+父任务 `success` 只说明热门页发现成功，不代表所有视频已经采集完毕。继续查询它创建的子任务：
 
 ```powershell
-$unitRows = @(Invoke-CrawlerSql "SELECT id, platform_unit_id FROM video_units WHERE video_id = $videoId ORDER BY id ASC;")
-if ($unitRows.Count -eq 0) { throw 'No video units were persisted' }
+$childRows = @(Invoke-CrawlerSql @"
+SELECT BIN_TO_UUID(id), video_id, status, source_url
+FROM crawl_jobs
+WHERE parent_job_id = UUID_TO_BIN('$jobId')
+ORDER BY created_at ASC, id ASC;
+"@)
 
-$unitColumns = $unitRows[0] -split "`t"
-$unitId = [int64]$unitColumns[0]
-$platformUnitId = $unitColumns[1]
-Write-Host "unitId=$unitId platformUnitId=$platformUnitId"
+$childJobs = @($childRows | ForEach-Object {
+    $columns = $_ -split "`t", 4
+    [pscustomobject]@{
+        JobId = $columns[0]
+        VideoId = [long]$columns[1]
+        Status = $columns[2]
+        SourceUrl = $columns[3]
+    }
+})
+
+$childJobs | Format-Table -AutoSize
+if ($childJobs.Count -ne $videoLimit) {
+    throw "Expected $videoLimit child jobs, found $($childJobs.Count)"
+}
 ```
 
-查询弹幕与字幕：
+验收点：子任务 URL 都应是发现到的 Bilibili 视频 URL；子任务数必须等于请求的 `$videoLimit`；同一个视频不应出现重复子任务。
+
+## 10. 等待并验收所有视频子任务
+
+单 Worker 会串行执行子任务，按顺序等待：
 
 ```powershell
-$danmakuPage = Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/v1/video-units/$unitId/timed-text?content_type=danmaku&page_size=10" -Headers $headers
-$subtitlePage = Invoke-RestMethod -Method Get -Uri "http://localhost:8000/api/v1/video-units/$unitId/timed-text?content_type=subtitle&page_size=10" -Headers $headers
+$completedChildren = @($childJobs | ForEach-Object {
+    $result = Wait-CrawlJob -JobId $_.JobId -TimeoutSeconds 7200
+    [pscustomobject]@{
+        JobId = $_.JobId
+        VideoId = $_.VideoId
+        Status = $result.status
+        Metrics = $result.module_states.metrics
+        Comments = $result.module_states.comments
+        TimedText = $result.module_states.timed_text
+        Error = if ($null -eq $result.error) { $null } else { $result.error | ConvertTo-Json -Compress -Depth 10 }
+    }
+})
 
-$danmakuPage | ConvertTo-Json -Depth 10
-$subtitlePage | ConvertTo-Json -Depth 10
+$completedChildren | Format-Table -AutoSize
+
+$failedChildren = @($completedChildren | Where-Object {
+    $_.Status -ne 'success' -or
+    $_.Metrics -ne 'success' -or
+    $_.Comments -ne 'success' -or
+    $_.TimedText -ne 'success'
+})
+
+if ($failedChildren.Count -gt 0) {
+    $failedChildren | Format-Table -AutoSize
+    throw "$($failedChildren.Count) video child job(s) did not complete the full flow"
+}
 ```
 
-检查点：
-
-- 弹幕和字幕都通过统一 timed-text API 返回；
-- `content_type` 正确区分 `danmaku` 与 `subtitle`；
-- `start_ms` 非负，字幕存在时 `end_ms >= start_ms`；
-- 同一 `stream_id + dedup_key` 不产生重复条目；
-- 无字幕可能是内容本身没有可访问字幕，不应自动判定为系统失败。
-
-## 12. 验证数据库计数和原始对象
-
-执行只读汇总：
+再从数据库核对模块运行记录：
 
 ```powershell
 Invoke-CrawlerSql @"
-SELECT 'metric_snapshots', COUNT(*) FROM metric_snapshots WHERE video_id = $videoId
+SELECT BIN_TO_UUID(j.id), j.video_id, j.status, mr.module_key, mr.status
+FROM crawl_jobs j
+JOIN crawl_runs r ON r.job_id = j.id
+JOIN crawl_module_runs mr ON mr.crawl_run_id = r.id
+WHERE j.parent_job_id = UUID_TO_BIN('$jobId')
+ORDER BY j.created_at, r.attempt_no, mr.module_key;
+"@
+```
+
+首次运行时，每个视频应有 `metrics`、`comments`、`timed_text` 三个模块，且均为 `success`。
+
+## 11. 验收结构化结果与 MinIO 元数据
+
+逐个视频查询指标、评论、内容单元、弹幕和字幕：
+
+```powershell
+$resultSummary = @()
+
+foreach ($child in $childJobs) {
+    $videoId = $child.VideoId
+
+    $metrics = Invoke-RestMethod `
+        -Method Get `
+        -Uri "http://localhost:8000/api/v1/videos/$videoId/metrics/latest" `
+        -Headers $headers
+
+    $comments = Invoke-RestMethod `
+        -Method Get `
+        -Uri "http://localhost:8000/api/v1/videos/$videoId/comments?page_size=10&order=asc" `
+        -Headers $headers
+
+    $unitRows = @(Invoke-CrawlerSql "SELECT id, platform_unit_id FROM video_units WHERE video_id = $videoId ORDER BY id;")
+    if ($unitRows.Count -eq 0) { throw "Video $videoId has no video_units" }
+
+    $danmakuCount = 0
+    $subtitleCount = 0
+    foreach ($unitRow in $unitRows) {
+        $unitColumns = $unitRow -split "`t", 2
+        $unitId = [long]$unitColumns[0]
+
+        $danmaku = Invoke-RestMethod `
+            -Method Get `
+            -Uri "http://localhost:8000/api/v1/video-units/$unitId/timed-text?content_type=danmaku&page_size=10" `
+            -Headers $headers
+
+        $subtitles = Invoke-RestMethod `
+            -Method Get `
+            -Uri "http://localhost:8000/api/v1/video-units/$unitId/timed-text?content_type=subtitle&page_size=10" `
+            -Headers $headers
+
+        $danmakuCount += @($danmaku.items).Count
+        $subtitleCount += @($subtitles.items).Count
+    }
+
+    $resultSummary += [pscustomobject]@{
+        VideoId = $videoId
+        MetricKeys = @($metrics.metrics.PSObject.Properties).Count
+        CommentSampleCount = @($comments.items).Count
+        UnitCount = $unitRows.Count
+        DanmakuSampleCount = $danmakuCount
+        SubtitleSampleCount = $subtitleCount
+    }
+}
+
+$resultSummary | Format-Table -AutoSize
+```
+
+人工检查：
+
+- 指标 key 包括适用的 `standard.views`、`standard.likes`、`standard.favorites`、`standard.shares`、`standard.comments`、`standard.timed_comments` 和 `bilibili.coins`；
+- 指标不可用时使用状态表达，不得伪造为 `0`；
+- 评论包含父子关系、文本、作者平台标识、点赞数、回复数和发布时间等允许字段；
+- timed-text 的 `content_type` 只能是 `danmaku` 或 `subtitle`，`start_ms >= 0`；
+- 视频可能没有公开字幕，此时字幕数量为 0 是允许的；模块状态仍应为 `success`；
+- API 仅返回结构化数据，不返回 MinIO 预签名 URL。
+
+查询整次任务的数据库计数：
+
+```powershell
+Invoke-CrawlerSql @"
+SELECT 'videos', COUNT(DISTINCT j.video_id)
+FROM crawl_jobs j
+WHERE j.parent_job_id = UUID_TO_BIN('$jobId')
 UNION ALL
-SELECT 'comments', COUNT(*) FROM comments WHERE video_id = $videoId
+SELECT 'metric_snapshots', COUNT(*)
+FROM metric_snapshots m
+JOIN crawl_jobs j ON j.video_id = m.video_id
+WHERE j.parent_job_id = UUID_TO_BIN('$jobId')
+UNION ALL
+SELECT 'comments', COUNT(*)
+FROM comments c
+JOIN crawl_jobs j ON j.video_id = c.video_id
+WHERE j.parent_job_id = UUID_TO_BIN('$jobId')
 UNION ALL
 SELECT 'timed_text_items', COUNT(*)
 FROM timed_text_items i
 JOIN timed_text_streams s ON s.id = i.stream_id
 JOIN video_units u ON u.id = s.video_unit_id
-WHERE u.video_id = $videoId
+JOIN crawl_jobs j ON j.video_id = u.video_id
+WHERE j.parent_job_id = UUID_TO_BIN('$jobId')
 UNION ALL
 SELECT 'available_raw_artifacts', COUNT(*)
-FROM raw_artifacts
-WHERE video_id = $videoId AND storage_status = 'available';
+FROM raw_artifacts a
+JOIN crawl_jobs j ON j.video_id = a.video_id
+WHERE j.parent_job_id = UUID_TO_BIN('$jobId')
+  AND a.storage_status = 'available';
 "@
 ```
 
-查看原始对象元数据，不输出对象正文：
+抽查 MinIO 对象元数据：
 
 ```powershell
 Invoke-CrawlerSql @"
-SELECT bucket, object_key, artifact_type, sha256, etag, size_bytes, storage_status
-FROM raw_artifacts
-WHERE video_id = $videoId
-ORDER BY captured_at ASC;
+SELECT a.bucket, a.object_key, a.artifact_type, a.sha256, a.etag, a.size_bytes, a.storage_status
+FROM raw_artifacts a
+JOIN crawl_jobs j ON j.video_id = a.video_id
+WHERE j.parent_job_id = UUID_TO_BIN('$jobId')
+ORDER BY a.id
+LIMIT 50;
 "@
 ```
 
-成功信号：成功模块有对应结构化行；正式原始对象为 `available`，同时有非空 bucket、object key、SHA-256、大小和 ETag。数据库不保存预签名 URL。
+成功信号：对象路径包含平台、日期、视频标识、运行 ID 和 artifact 类型；已完成对象为 `available`，并有 `sha256`、`etag` 和大小。
 
-## 13. 验证创建幂等性
+## 12. 失败与 partial 排障
 
-使用同一个 `Idempotency-Key` 和同一个请求体再次创建：
-
-```powershell
-$sameJob = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/crawl-jobs -Headers $createHeaders -ContentType 'application/json' -Body $jobBody
-if ($sameJob.job_id -ne $jobId) { throw 'Idempotent replay returned a different job' }
-Write-Host "Idempotent replay returned original job $jobId"
-```
-
-同一个 key 改变请求应返回 409：
+先查看父子任务和模块状态：
 
 ```powershell
-$conflictBody = @{
-    source_url = 'https://www.bilibili.com/v/popular/all'
-    auth_profile_id = $profileId
-    video_limit = 2
-} | ConvertTo-Json
+Invoke-CrawlerSql @"
+SELECT BIN_TO_UUID(j.id), j.job_type, j.video_id, j.status, r.error_code, r.error_message
+FROM crawl_jobs j
+LEFT JOIN crawl_runs r
+  ON r.job_id = j.id
+ AND r.attempt_no = j.attempt_count
+WHERE j.id = UUID_TO_BIN('$jobId') OR j.parent_job_id = UUID_TO_BIN('$jobId')
+ORDER BY j.created_at;
+"@
 
-try {
-    Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/crawl-jobs -Headers $createHeaders -ContentType 'application/json' -Body $conflictBody
-    throw 'Expected IDEMPOTENCY_CONFLICT but request succeeded'
-} catch {
-    $statusCode = [int]$_.Exception.Response.StatusCode
-    if ($statusCode -ne 409) { throw }
-    Write-Host 'Received expected HTTP 409 IDEMPOTENCY_CONFLICT'
-}
-```
-
-## 14. 验证 pending 取消和手动续跑
-
-该步骤会创建测试任务。先停止 Worker，确保任务保持 `pending`：
-
-```powershell
-docker compose stop worker
-
-$cancelKey = "manual-cancel-$(Get-Date -Format yyyyMMddHHmmss)"
-$cancelHeaders = $headers + @{ 'Idempotency-Key' = $cancelKey }
-$cancelJob = Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/crawl-jobs -Headers $cancelHeaders -ContentType 'application/json' -Body $jobBody
-$cancelJobId = $cancelJob.job_id
-
-$cancelled = Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/crawl-jobs/$cancelJobId/cancel" -Headers $headers
-if ($cancelled.status -ne 'cancelled') { throw "Expected cancelled, got $($cancelled.status)" }
-
-$resumed = Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/crawl-jobs/$cancelJobId/resume" -Headers $headers -ContentType 'application/json' -Body '{}'
-if ($resumed.status -ne 'pending') { throw "Expected pending after resume, got $($resumed.status)" }
-
-$cancelledAgain = Invoke-RestMethod -Method Post -Uri "http://localhost:8000/api/v1/crawl-jobs/$cancelJobId/cancel" -Headers $headers
-if ($cancelledAgain.status -ne 'cancelled') { throw 'Second cancellation failed' }
-
-docker compose start worker
-```
-
-成功信号：pending 任务可直接取消；只有 `partial`、`failed`、`cancelled` 可续跑；续跑保持逻辑 job ID 不变并恢复为 `pending`。
-
-运行中进程组取消属于更具破坏性的可选测试：只在隔离测试项目内创建一个预计运行较久的子任务，确认状态为 `running` 后调用 cancel，并检查 Worker 日志与 `docker compose top worker`。最终必须为 `cancelled`，且不应遗留 Chromium 子进程。
-
-## 15. 日志与脱敏检查
-
-```powershell
-$logs = docker compose logs --no-color --since 60m api worker
-
-if ($logs -match [regex]::Escape($apiKey)) {
-    throw 'API key value appeared in logs'
-}
-if ($logs -match 'session=nested-cookie|test-secret') {
-    throw 'A known sensitive test value appeared in logs'
-}
-
-Write-Host 'No supplied API key value was found in API/Worker logs'
-```
-
-人工检查日志只能包含 request/job/run/video/module、脱敏错误、HTTP host/path/status 等允许字段，不得包含 Cookie、Authorization 值、完整敏感请求头、Profile 文件内容或真实 `.env` 值。
-
-常用排障命令：
-
-```powershell
 docker compose ps -a
-docker compose logs --tail 300 migrate api worker mysql minio minio-init
+docker compose logs --tail 500 worker api
 docker compose top worker
 ```
 
 常见判断：
 
-- `401 UNAUTHORIZED`：API Key 缺失或不一致；
-- `PROFILE_EXPIRED` 或验证结果非 active：重新手工登录，再 verify；
-- MySQL `1045`：`.env` 凭据与已有数据卷初始化凭据不一致；
-- readiness 503：查看响应中的 MySQL、迁移 revision、MinIO、bucket 组件状态；
-- `partial`：逐项查看 `module_states`，成功模块的数据应保留；
-- 上游拒绝、验证码或风控：停止测试，不做绕过。
+- 父任务 `failed`：优先检查热门页是否能打开、Profile 是否 active、网络捕获和 DOM fallback 日志；
+- 子任务 `partial`：检查是 `metrics`、`comments` 还是 `timed_text` 失败，已成功模块的数据应仍然存在；
+- `PROFILE_EXPIRED`：停止 Worker，重新手工登录 Profile，再调用 verify；
+- `401 UNAUTHORIZED`：PowerShell 中的 API Key 与 `.env` 不一致；
+- readiness 503：检查 MySQL、迁移 revision、MinIO 和 bucket 状态；
+- 评论为 0：先确认视频是否开放评论，再看 comments 模块与上游响应状态；
+- 字幕为 0：视频可能没有可访问字幕，不单独视为失败；
+- timed-text 失败：分别查看弹幕二进制、字幕元数据和原始 artifact 的记录。
 
-## 16. 可选：运行代码验收套件
-
-该步骤会安装开发依赖并使用 Docker Testcontainers：
+需要续跑某个 `partial`、`failed` 或 `cancelled` 子任务时：
 
 ```powershell
-uv sync --extra dev
-uv run ruff format --check src tests
-uv run ruff check src tests
-uv run mypy src
-uv run pytest --cov=video_crawler --cov-report=term-missing
+$failedJobId = '<替换为子任务 JobId>'
+$resumeBody = @{ strategy = @{ max_retries = 3 } } | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+    -Method Post `
+    -Uri "http://localhost:8000/api/v1/crawl-jobs/$failedJobId/resume" `
+    -Headers $headers `
+    -ContentType 'application/json' `
+    -Body $resumeBody
+
+Wait-CrawlJob -JobId $failedJobId -TimeoutSeconds 7200 | ConvertTo-Json -Depth 10
 ```
 
-0.1.0 Task 22 的参考成功信号是：格式、Ruff、mypy 全部通过；总覆盖率至少 85%；Windows 上 POSIX 进程组集成测试允许按平台条件跳过，其余测试不得失败。
+续跑保持逻辑 job ID 不变，创建新的 `crawl_run`，并跳过已经成功的模块。
 
-## 17. 测试证据清单
+## 13. 日志脱敏与测试证据
+
+```powershell
+$logs = docker compose logs --no-color api worker
+
+if ($logs -match [regex]::Escape($apiKey)) {
+    throw 'API key appeared in logs'
+}
+if ($logs -match '(?i)cookie\s*[:=]|authorization\s*[:=]') {
+    throw 'Potential sensitive header appeared in logs'
+}
+```
 
 建议保存以下非敏感证据：
 
-- 当前 commit hash：`git rev-parse HEAD`；
-- `docker compose config --quiet` 退出码；
-- `docker compose ps -a` 状态；
-- readiness JSON；
-- Profile ID 与状态，不保存 Cookie/Profile 内容；
-- 父任务、子任务 ID 和终态；
-- 各模块状态与结果计数；
-- 原始对象的 object key、大小、SHA-256/ETag，不保存预签名 URL；
-- 幂等、取消、续跑的状态码和结果；
-- 测试套件摘要与覆盖率；
-- 失败时的脱敏日志片段。
+- `git rev-parse HEAD`；
+- `docker compose ps -a` 和 readiness JSON；
+- Profile ID 与 `active` 状态，不保存 Profile 内容；
+- 父任务 ID、`discovery` 状态、发现数量；
+- 所有子任务 ID、终态和三个模块状态；
+- 每个视频的指标、评论、弹幕、字幕计数；
+- MinIO object key、artifact type、大小、SHA-256/ETag；
+- 脱敏后的错误码与必要日志片段。
 
-禁止把 `.env`、真实 Cookie、账号信息、Profile、未脱敏响应或备份文件提交到 Git。
+禁止保存或提交 `.env`、API Key、Cookie、Authorization、账号信息、浏览器 Profile、未脱敏响应或预签名 URL。
 
-## 18. 停止或销毁测试环境
+## 14. 测试完成后停止环境
 
-只停止容器并保留数据库、MinIO 和 Profile 数据：
+保留 MySQL、MinIO 和 Profile 数据，仅停止容器：
 
 ```powershell
 docker compose down
-```
-
-再次启动：
-
-```powershell
-docker compose up -d mysql minio minio-init migrate api worker
-```
-
-只有确认测试数据不再需要时，才可删除本手册创建的隔离数据卷。下面操作不可恢复：
-
-```powershell
-if ($env:COMPOSE_PROJECT_NAME -ne 'video-crawler-manual-test') {
-    throw "Refusing destructive cleanup for project $env:COMPOSE_PROJECT_NAME"
-}
-
-docker compose down --volumes --remove-orphans
-Remove-Variable apiKey,secureApiKey -ErrorAction SilentlyContinue
+Remove-Variable apiKey, secureApiKey -ErrorAction SilentlyContinue
 Remove-Item Env:COMPOSE_PROJECT_NAME
 ```
 
-成功信号：只删除 `video-crawler-manual-test` 项目的容器、网络和命名卷。不要对需要保留的数据环境执行 `down -v`。
+需要继续测试时重新设置项目名并启动：
+
+```powershell
+$env:COMPOSE_PROJECT_NAME = 'video-crawler-popular-e2e'
+docker compose up -d mysql minio minio-init migrate api worker
+```
+
+只有确认测试数据不再需要时，才执行不可恢复的数据卷删除：
+
+```powershell
+$confirmation = Read-Host 'Type DELETE-popular-e2e to remove isolated test volumes'
+if ($confirmation -ne 'DELETE-popular-e2e') { throw 'Cleanup cancelled' }
+
+$env:COMPOSE_PROJECT_NAME = 'video-crawler-popular-e2e'
+docker compose down --volumes --remove-orphans
+Remove-Item Env:COMPOSE_PROJECT_NAME
+```

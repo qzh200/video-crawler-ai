@@ -127,7 +127,7 @@ GET /health/live
 GET /health/ready
 ```
 
-完整请求/响应语义见 `docs/api-contract.md`。准备进行真实测试时，按 `docs/manual-test-runbook.md` 的隔离环境步骤执行；部署、Profile 登录、备份、恢复、取消与排障命令见 `docs/operations.md`；数据库表与唯一约束见 `docs/architecture/database-schema.md`。
+完整请求/响应语义见 `docs/api-contract.md`。实际测试 Bilibili 热门页 `https://www.bilibili.com/v/popular/all` 的发现、子任务采集和结果验收时，按 `docs/manual-test-runbook.md` 执行；部署、Profile 登录、备份、恢复、取消与排障命令见 `docs/operations.md`；数据库表与唯一约束见 `docs/architecture/database-schema.md`。
 
 ## 数据保留与安全
 

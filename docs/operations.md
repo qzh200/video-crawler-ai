@@ -3,8 +3,8 @@
 本文档描述 0.1.0 的实际生产路径：单个 API、单个 Worker、MySQL、MinIO、手动
 Profile 登录，以及备份、恢复和故障处理。所有 PowerShell 命令均从仓库根目录执行。
 
-如果目标是第一次做真实的端到端验收，而不是部署生产环境，请优先按
-[`manual-test-runbook.md`](manual-test-runbook.md) 使用独立 Compose 项目、小规模采集策略和验收清单。
+如果目标是实际测试 Bilibili 热门页 `https://www.bilibili.com/v/popular/all` 的完整采集链路，请优先按
+[`manual-test-runbook.md`](manual-test-runbook.md) 验证父任务发现、视频子任务、指标、评论、弹幕、字幕、MySQL 和 MinIO。
 
 ## 1. 前置条件与固定版本
 
