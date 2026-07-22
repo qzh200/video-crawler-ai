@@ -255,6 +255,8 @@ CI 中禁止依赖 Bilibili 实时网络。Adapter 测试必须使用本地 fixt
 
 - 严格按 `docs/superpowers/plans/2026-07-19-video-crawler-platform.md` 顺序执行；
 - 每个任务开始前确认依赖接口与前序任务一致；
+- 当前环境不可使用 `rg`；文件发现和文本检索必须使用 PowerShell 的 `Get-ChildItem -Recurse` 与 `Select-String`，不得调用或推荐 `rg` 命令；
+- 禁止使用子智能体、多智能体或并行代理进行开发，不得通过 spawn、dispatch 或 delegate 将实现、测试、审查等工作交给其他智能体；所有仓库工作必须由当前智能体独立完成。实现计划中关于子智能体驱动开发的建议不适用于本仓库；
 - 不自行扩大数据采集范围；
 - 不自行引入 Redis、Celery、Kafka、前端或用户系统；
 - 不改变单 Worker 约束；
