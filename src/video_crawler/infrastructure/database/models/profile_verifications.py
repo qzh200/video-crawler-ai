@@ -36,4 +36,3 @@ class AuthProfileVerification(Base):
     finished_at: Mapped[datetime | None] = mapped_column(mysql.DATETIME(fsp=3))
     error_code: Mapped[str | None] = mapped_column(mysql.VARCHAR(100))
     error_message: Mapped[str | None] = mapped_column(mysql.TEXT)
-

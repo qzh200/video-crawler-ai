@@ -219,9 +219,7 @@ async def test_api_worker_and_storage_are_wired_end_to_end(
             )
             assert profile.status_code == 201
             profile_id = profile.json()["profile_id"]
-            verification = await client.post(
-                f"/api/v1/auth-profiles/{profile_id}/verify"
-            )
+            verification = await client.post(f"/api/v1/auth-profiles/{profile_id}/verify")
             assert verification.status_code == 202
             verification_id = UUID(verification.json()["verification_id"])
             now = datetime.now(UTC)

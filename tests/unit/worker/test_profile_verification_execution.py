@@ -29,9 +29,7 @@ class FakeRepository:
         self.execution = execution
         self.events: list[tuple[object, ...]] = []
 
-    async def load_execution(
-        self, verification_id: UUID
-    ) -> ClaimedProfileVerification | None:
+    async def load_execution(self, verification_id: UUID) -> ClaimedProfileVerification | None:
         self.events.append(("load", verification_id))
         return self.execution
 
@@ -123,4 +121,3 @@ def test_production_supervisor_prioritizes_profile_verification_runner() -> None
 
     assert isinstance(supervisor._auxiliary_runner, ProfileVerificationRunner)
     assert supervisor._auxiliary_runner._timeout_seconds == 135
-

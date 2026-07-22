@@ -139,9 +139,7 @@ def test_profile_endpoints_never_return_browser_state() -> None:
     assert requested.status_code == 202
     assert requested.json()["status"] == "pending"
     verification_id = requested.json()["verification_id"]
-    fetched = client.get(
-        f"/api/v1/auth-profiles/{profile_id}/verifications/{verification_id}"
-    )
+    fetched = client.get(f"/api/v1/auth-profiles/{profile_id}/verifications/{verification_id}")
     assert fetched.status_code == 200
     disabled = client.post(f"/api/v1/auth-profiles/{profile_id}/disable")
     assert disabled.json()["status"] == "disabled"
@@ -170,9 +168,7 @@ def test_missing_profile_returns_structured_not_found() -> None:
 def test_missing_profile_cannot_request_verification() -> None:
     client, _ = _client()
 
-    response = client.post(
-        "/api/v1/auth-profiles/01900000-0000-7000-8000-000000000099/verify"
-    )
+    response = client.post("/api/v1/auth-profiles/01900000-0000-7000-8000-000000000099/verify")
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "PROFILE_NOT_FOUND"

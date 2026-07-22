@@ -108,15 +108,11 @@ def test_profile_verification_migration_adds_only_its_request_table() -> None:
 
 def test_profile_verification_docs_describe_async_worker_flow() -> None:
     readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-    api_contract = (REPOSITORY_ROOT / "docs" / "api-contract.md").read_text(
+    api_contract = (REPOSITORY_ROOT / "docs" / "api-contract.md").read_text(encoding="utf-8")
+    operations = (REPOSITORY_ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
+    schema = (REPOSITORY_ROOT / "docs" / "architecture" / "database-schema.md").read_text(
         encoding="utf-8"
     )
-    operations = (REPOSITORY_ROOT / "docs" / "operations.md").read_text(
-        encoding="utf-8"
-    )
-    schema = (
-        REPOSITORY_ROOT / "docs" / "architecture" / "database-schema.md"
-    ).read_text(encoding="utf-8")
     combined = "\n".join((readme, api_contract, operations, schema))
 
     assert "auth_profile_verifications" in combined

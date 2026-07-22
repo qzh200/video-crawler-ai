@@ -60,9 +60,7 @@ class FakeVerificationStore:
         error_message: str,
         now: datetime,
     ) -> bool:
-        self.events.append(
-            ("mark_failed", verification_id, error_code, error_message, now)
-        )
+        self.events.append(("mark_failed", verification_id, error_code, error_message, now))
         return True
 
 
@@ -175,4 +173,3 @@ async def test_runner_terminates_timed_out_process_group() -> None:
         )
         for event in store.events
     )
-

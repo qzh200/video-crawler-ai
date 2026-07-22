@@ -69,13 +69,16 @@ class ProfileVerificationRunner:
         terminate_grace_seconds: float,
         kill_timeout_seconds: float,
     ) -> None:
-        if min(
-            poll_interval_seconds,
-            heartbeat_interval_seconds,
-            stale_after_seconds,
-            timeout_seconds,
-            kill_timeout_seconds,
-        ) <= 0:
+        if (
+            min(
+                poll_interval_seconds,
+                heartbeat_interval_seconds,
+                stale_after_seconds,
+                timeout_seconds,
+                kill_timeout_seconds,
+            )
+            <= 0
+        ):
             raise ValueError("Profile verification intervals must be positive")
         if terminate_grace_seconds < 0:
             raise ValueError("Profile verification grace period cannot be negative")
@@ -150,4 +153,3 @@ class ProfileVerificationRunner:
                 await self._states.heartbeat(verification_id, now)
                 next_heartbeat = now + timedelta(seconds=self._heartbeat_interval_seconds)
             await self._sleep(self._poll_interval_seconds)
-

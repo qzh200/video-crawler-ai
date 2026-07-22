@@ -55,4 +55,3 @@ def test_cli_parses_verification_id(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert profile_verification_entrypoint.main([str(VERIFICATION_ID)]) == 0
     assert received == [VERIFICATION_ID]
-

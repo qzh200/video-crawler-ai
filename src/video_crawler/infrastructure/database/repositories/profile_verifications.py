@@ -53,9 +53,7 @@ class ProfileVerificationRepository:
         async with self.sessions.transaction() as session:
             profile = (
                 await session.execute(
-                    select(AuthProfile)
-                    .where(AuthProfile.id == profile_id)
-                    .with_for_update()
+                    select(AuthProfile).where(AuthProfile.id == profile_id).with_for_update()
                 )
             ).scalar_one_or_none()
             if profile is None:
