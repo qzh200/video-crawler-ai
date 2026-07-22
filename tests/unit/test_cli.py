@@ -85,6 +85,7 @@ async def test_login_uses_worker_profile_root_and_visible_browser(tmp_path: Path
         "profile_root": tmp_path,
         "profile_directory": "bilibili-main",
         "headless": False,
+        "text_mode": False,
     }
     assert browser.opened == ("https://www.bilibili.com/", 60, False)
     assert browser.closed is True

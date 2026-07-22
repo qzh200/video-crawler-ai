@@ -107,6 +107,7 @@ async def test_browser_gateway_can_start_visible_for_interactive_login(tmp_path:
         profile_root=tmp_path,
         profile_directory="profile-1",
         headless=False,
+        text_mode=False,
         crawler_factory=lambda: crawler,
     )
 
@@ -116,7 +117,7 @@ async def test_browser_gateway_can_start_visible_for_interactive_login(tmp_path:
         "user_data_dir": str(tmp_path / "profile-1"),
         "use_persistent_context": True,
         "headless": False,
-        "text_mode": True,
+        "text_mode": False,
     }
 
 

@@ -77,6 +77,7 @@ async def run_login(
         profile_root=settings.browser_profile_root,
         profile_directory=profile_directory,
         headless=False,
+        text_mode=False,
     )
     output(f"Opening {platform} login with Profile '{profile_directory}'.")
     output(f"Profile data directory: {profile_path}")
