@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -37,6 +38,14 @@ class ClaimedJob:
     job_type: str
     effective_strategy: dict[str, Any]
     attempt_count: int
+
+
+def _public_error(error: Exception) -> tuple[str, str, dict[str, object] | None]:
+    code = getattr(error, "code", type(error).__name__)
+    message = getattr(error, "public_message", "module execution failed")
+    raw_details = getattr(error, "details", None)
+    details = dict(raw_details) if isinstance(raw_details, Mapping) else None
+    return str(code), str(message), details
 
 
 class JobRepository:
@@ -438,6 +447,28 @@ class SqlAlchemyWorkerStateStore:
             final_status = run.status if run.status in self._TERMINAL else status
             run.status = final_status
             run.finished_at = current
+            if final_status in {"failed", "partial"} and run.error_code is None:
+                failed_module = (
+                    await session.execute(
+                        select(CrawlModuleRun)
+                        .where(
+                            CrawlModuleRun.crawl_run_id == run_id,
+                            CrawlModuleRun.status == "failed",
+                        )
+                        .order_by(
+                            CrawlModuleRun.finished_at.desc(),
+                            CrawlModuleRun.id.desc(),
+                        )
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                if failed_module is not None:
+                    run.error_code = failed_module.error_code
+                    run.error_message = failed_module.error_message
+                    run.result_summary = {
+                        "module": failed_module.module_key,
+                        "details": failed_module.result_summary or {},
+                    }
             await session.execute(
                 update(CrawlJob)
                 .where(CrawlJob.id == job_id)
@@ -542,12 +573,14 @@ class SqlAlchemyModuleStateStore:
         await self._mark(module_key, "success", finished_at=datetime.now(UTC))
 
     async def mark_failed(self, module_key: str, error: Exception) -> None:
+        error_code, error_message, result_summary = _public_error(error)
         await self._mark(
             module_key,
             "failed",
             finished_at=datetime.now(UTC),
-            error_code=type(error).__name__,
-            error_message="module execution failed",
+            error_code=error_code,
+            error_message=error_message,
+            result_summary=result_summary,
         )
 
     async def mark_cancelled(self, module_key: str, error: BaseException) -> None:
