@@ -120,6 +120,11 @@ POST /api/v1/auth-profiles/{profile_id}/disable
 
 Profile API 不返回 Cookie 或文件内容。
 
+创建任务前必须确认 Profile 存在且状态为 `active`。Profile 不存在时返回 HTTP 404
+`PROFILE_NOT_FOUND`；状态为 `expired` 或 `disabled` 时返回 HTTP 409
+`PROFILE_NOT_ACTIVE`。已经进入 `pending` 的任务在 Profile 变为非 active 后暂停领取；Profile
+重新登录并验证为 active 后可以继续领取。
+
 ## 6. 指标
 
 ```http
@@ -211,6 +216,12 @@ GET /health/ready
 - `JOB_NOT_CANCELLABLE`；
 - `JOB_NOT_RESUMABLE`；
 - `PROFILE_NOT_FOUND`；
+- `PROFILE_NOT_ACTIVE`；
+- `DISCOVERY_EMPTY`；
 - `STORAGE_UNAVAILABLE`；
 - `INVALID_CURSOR`；
 - `RESULT_NOT_FOUND`。
+
+Bilibili 热门列表在捕获响应、DOM 和公开 HTTP 回退均未发现有效目标时，`discovery` 模块及
+根任务失败，任务/run 错误码为 `DISCOVERY_EMPTY`。该错误通过现有任务错误字段返回，不新增
+API 端点；诊断详情只包含各来源的响应数和候选数，不包含 Cookie、Authorization 或完整响应头。

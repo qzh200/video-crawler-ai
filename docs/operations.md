@@ -168,3 +168,17 @@ Invoke-WebRequest http://localhost:8000/health/ready -UseBasicParsing
   Playwright Chromium 安装步骤；不要在运行中的容器临时安装未记录依赖。
 
 排障日志不得包含 Cookie、Authorization、完整敏感请求头或真实 `.env` 值。
+
+## 9. UTF-8 与数据库导出检查
+
+Windows PowerShell 5.1 在未指定编码时，可能把没有 BOM 的 UTF-8 文件显示成乱码。检查 SQL、
+Markdown 或 JSON 文件时显式指定 UTF-8：
+
+```powershell
+Get-Content -Encoding UTF8 .\video_crawler.sql
+Get-Content -Raw -Encoding UTF8 .\README.md
+```
+
+MySQL、Navicat 导出和导入应继续使用 `utf8mb4`/UTF-8，不要根据 PowerShell 的错误显示结果对
+文件做二次转码。Navicat 导出中的 `0x...` 是 `BINARY(16)` UUID 列的预期十六进制表示，不是
+字符损坏；SQL 字符串内的 `\"` 是 JSON/SQL 转义，也不是乱码。

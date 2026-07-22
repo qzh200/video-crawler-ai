@@ -293,3 +293,14 @@ def _settings(**overrides: object) -> Settings:
             **overrides,
         }
     )
+
+
+def test_operations_document_utf8_and_binary_uuid_inspection() -> None:
+    operations = Path("docs/operations.md").read_text(encoding="utf-8")
+    api_contract = Path("docs/api-contract.md").read_text(encoding="utf-8")
+
+    assert "Get-Content -Encoding UTF8" in operations
+    assert "BINARY(16)" in operations
+    assert "0x..." in operations
+    assert "PROFILE_NOT_ACTIVE" in api_contract
+    assert "DISCOVERY_EMPTY" in api_contract
