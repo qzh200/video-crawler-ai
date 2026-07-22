@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Callable, Sequence
+from typing import Protocol
 from uuid import UUID
+
+from video_crawler.bootstrap import ApplicationContainer
+
+
+class TaskContainer(Protocol):
+    async def execute_run(self, run_id: UUID) -> object: ...
+
+    async def aclose(self) -> None: ...
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -12,10 +22,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Validate the run identity; Task 19 supplies the application dependency wiring."""
+    """Execute one isolated crawl run using process-local dependencies."""
 
-    build_parser().parse_args(argv)
-    return 1
+    arguments = build_parser().parse_args(argv)
+    return asyncio.run(run_task(arguments.run_id))
+
+
+async def run_task(
+    run_id: UUID,
+    *,
+    container_factory: Callable[[], TaskContainer] = ApplicationContainer,
+) -> int:
+    container = container_factory()
+    try:
+        result = await container.execute_run(run_id)
+        status = getattr(getattr(result, "status", None), "value", None)
+        return 0 if status in {"success", "partial"} else 1
+    except Exception:
+        return 1
+    finally:
+        await container.aclose()
 
 
 if __name__ == "__main__":

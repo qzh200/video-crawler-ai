@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.mysql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -122,3 +122,41 @@ class ContentRepository:
                     )
                 ).scalar_one()
             )
+
+    async def ensure_video_unit(
+        self,
+        *,
+        video_id: int,
+        platform_unit_id: str,
+        now: datetime,
+    ) -> int:
+        """Return an existing unit or create the next generic unit index."""
+
+        async with self.sessions.transaction() as session:
+            existing = (
+                await session.execute(
+                    select(VideoUnit.id).where(
+                        VideoUnit.video_id == video_id,
+                        VideoUnit.platform_unit_id == platform_unit_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                return int(existing)
+            maximum = await session.scalar(
+                select(func.max(VideoUnit.unit_index)).where(VideoUnit.video_id == video_id)
+            )
+            unit_index = int(maximum) + 1 if maximum is not None else 0
+            current = _db_time(now)
+            unit = VideoUnit(
+                video_id=video_id,
+                platform_unit_id=platform_unit_id,
+                unit_index=unit_index,
+                duration_ms=None,
+                platform_ids={},
+                created_at=current,
+                updated_at=current,
+            )
+            session.add(unit)
+            await session.flush()
+            return int(unit.id)
